@@ -3,6 +3,7 @@
 #include "eudaq/FileNamer.hh"
 #include "euLog.hh"
 #include "Colours.hh"
+#include <filesystem>
 
 
 namespace{
@@ -102,21 +103,60 @@ void LogCollectorGUI::LoadFile(const std::string &filename) {
 
 void LogCollectorGUI::DoInitialise(){
   auto ini = GetInitConfiguration();
-  std::string file_pattern = "euLog_$12D.log";
+  m_file_pattern = "euLog_$12D.log";
   if(ini){
-    file_pattern = ini->Get("EULOG_GUI_LOG_FILE_PATTERN", file_pattern);
+    m_file_pattern = ini->Get("EULOG_GUI_LOG_FILE_PATTERN",
+                              ini->Get("FILE_PATTERN", m_file_pattern));
+  }
+  if (m_os_file.is_open()) {
+    m_os_file.close();
+  }
+}
+
+void LogCollectorGUI::OnConfigure() {
+  auto conf = GetConfiguration();
+  if (conf) {
+    m_file_pattern = conf->Get("EULOG_GUI_LOG_FILE_PATTERN",
+                               conf->Get("FILE_PATTERN", m_file_pattern));
+  }
+  eudaq::CommandReceiver::OnConfigure();
+}
+
+void LogCollectorGUI::OpenRunLogFile() {
+  if (m_os_file.is_open()) {
+    m_os_file.close();
   }
   std::time_t time_now = std::time(nullptr);
   char time_buff[13];
   time_buff[12] = 0;
   std::strftime(time_buff, sizeof(time_buff),
-		"%y%m%d%H%M%S", std::localtime(&time_now));
+                "%y%m%d%H%M%S", std::localtime(&time_now));
   std::string start_time(time_buff);
-  m_os_file.open(std::string(eudaq::FileNamer(file_pattern).Set('D', start_time)).c_str(),
-		 std::ios_base::app);
+  std::string file_name = eudaq::FileNamer(m_file_pattern)
+                            .Set('D', start_time)
+                            .Set('R', GetRunNumber());
+  std::filesystem::path file_path(file_name);
+  if (!file_path.parent_path().empty()) {
+    std::filesystem::create_directories(file_path.parent_path());
+  }
+  m_os_file.open(file_name.c_str(), std::ios_base::app);
   std::stringstream ss;
-  ss << "\n*** LogCollector started at "<< time_now<< " ***";
-  m_os_file<<ss.str()<<std::endl;
+  ss << "\n*** LogCollector started run " << GetRunNumber()
+     << " at " << time_now << " ***";
+  m_os_file << ss.str() << std::endl;
+}
+
+void LogCollectorGUI::OnStartRun() {
+  OpenRunLogFile();
+  eudaq::CommandReceiver::OnStartRun();
+}
+
+void LogCollectorGUI::OnStopRun() {
+  eudaq::CommandReceiver::OnStopRun();
+  if (m_os_file.is_open()) {
+    m_os_file.flush();
+    m_os_file.close();
+  }
 }
 
 
@@ -142,6 +182,10 @@ void LogCollectorGUI::closeEvent(QCloseEvent *) {
 }
 
 void LogCollectorGUI::DoTerminate() {
+  if (m_os_file.is_open()) {
+    m_os_file.flush();
+    m_os_file.close();
+  }
   std::cout << "Closing!" << std::endl;
   QApplication::quit();
 }

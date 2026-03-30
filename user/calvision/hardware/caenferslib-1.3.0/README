@@ -1,0 +1,53 @@
+------------------------------------------------------------------------------
+							--- CAEN SpA ---
+			---	Via Vetraia, 11 - 55049 - Viareggio ITALY ---
+				---	+390594388398 - www.caen.it ---
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+
+CAEN FERS Library Readme
+    
+------------------------------------------------------------------------------
+
+ Content
+ -----------------------------------------------------------------------------
+ README				: this file
+ ReleaseNotes		: revision History and notes
+ src				: source files
+ include			: header files
+ FERSlibDemo		: C demo showing how to use the main FERSlib functionalities
+
+
+ SYSTEM REQUIREMENTS
+ -----------------------------------------------------------------------------
+ - g++ with C++17 support
+  
+
+ INSTALLATION
+ -----------------------------------------------------------------------------
+ - In the extracted folder run
+    $ ./configure
+    $ make
+    $ sudo make install
+    $ sudo ldconfig
+
+  The library and header files will be installed in /usr/local/lib and /usr/local/include,
+  respectively. 
+  
+  If you want to use a different installation path, run:
+   $ ./configure --prefix=YOUR_LIB_PATH
+  Then, add then the library path to LD_LIBRARY_PATH variable
+  
+  If you want to use a specific compiler version, run:
+   $ ./configure CXX=/pathToExe/g++-VV
+  where VV is the desired g++ version
+
+
+ SUPPORT   
+ -----------------------------------------------------------------------------  
+ For technical support, go to https://www.caen.it/mycaen/support/ (login and
+ MyCAEN+ account required).
+
+ If you don't have an account or want to update your old one, find the instructions
+ at https://www.caen.it/support-services/getting-started-with-mycaen-portal/.

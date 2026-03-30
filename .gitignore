@@ -5,6 +5,7 @@ data/*
 include/*
 extern/*
 lib/*
+modules_calvision/
 log/*
 test.conf
 test.ini
@@ -12,6 +13,9 @@ test.ini
 *.raw
 *.log
 *.root
+FERSlib_Log.txt
+Monitor_out.txt
+drslockfile.txt
 
 *.zip
 !main/lib/python/extern/pybind11*zip

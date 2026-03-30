@@ -15,7 +15,11 @@ aux_source_directory(src CORE_SRC)
 add_library(${EUDAQ_CORE_LIBRARY} SHARED ${CORE_SRC})
 
 # generate the dictionary source code if ROOT is available
-FIND_PACKAGE(root QUIET)
+if(DEFINED ENV{ROOTSYS} AND EXISTS "$ENV{ROOTSYS}/cmake")
+  find_package(ROOT QUIET CONFIG PATHS "$ENV{ROOTSYS}/cmake" NO_DEFAULT_PATH)
+else()
+  find_package(ROOT QUIET)
+endif()
 IF(ROOT_FOUND)
   ROOT_GENERATE_DICTIONARY(eudaqCoreDict
     include/eudaq/Exception.hh
@@ -34,7 +38,7 @@ IF(ROOT_FOUND)
     COMPILE_FLAGS "-Wno-unused-function -Wno-overlength-strings -Wno-zero-as-null-pointer-constant -w -I${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
-  TARGET_LINK_LIBRARIES(${EUDAQ_CORE_LIBRARY} ${ROOT_LIBRARIES})
+  target_link_libraries(${EUDAQ_CORE_LIBRARY} PRIVATE ${ROOT_LIBRARIES})
 
   # Also install the dictionary objects
   INSTALL(FILES
@@ -52,7 +56,7 @@ if(CMAKE_COMPILER_IS_GNUCXX AND (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.3)
 endif()
 
 list(APPEND ADDITIONAL_LIBRARIES ${CMAKE_DL_LIBS})
-target_link_libraries(${EUDAQ_CORE_LIBRARY} ${EUDAQ_THREADS_LIB} ${ADDITIONAL_LIBRARIES})
+target_link_libraries(${EUDAQ_CORE_LIBRARY} PRIVATE ${EUDAQ_THREADS_LIB} ${ADDITIONAL_LIBRARIES})
 target_include_directories(${EUDAQ_CORE_LIBRARY} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>)
 
 install(TARGETS ${EUDAQ_CORE_LIBRARY}

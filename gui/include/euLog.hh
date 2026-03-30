@@ -36,6 +36,9 @@ public:
   void Exec() override;
 public:
   void DoInitialise() override;
+  void OnConfigure() override;
+  void OnStartRun() override;
+  void OnStopRun() override;
   void DoConnect(eudaq::ConnectionSPC id) override;
   void DoReceive(const eudaq::LogMessage &msg) override;
   void LoadFile(const std::string &filename);
@@ -52,7 +55,9 @@ private slots:
   void AddMessage(const eudaq::LogMessage &msg);
 private:
   static void CheckRegistered();
+  void OpenRunLogFile();
   LogCollectorModel m_model;
   LogItemDelegate m_delegate;
   std::ofstream m_os_file;
+  std::string m_file_pattern;
 };

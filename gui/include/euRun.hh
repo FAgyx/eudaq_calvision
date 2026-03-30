@@ -44,6 +44,7 @@ private slots:
   void on_btnLog_clicked();
   void on_btnLoadInit_clicked();
   void on_btnLoadConf_clicked();
+  void on_btnLoadDataPath_clicked();
   void onCustomContextMenu(const QPoint &point);
 
   void on_btn_LoadScanFile_clicked();
@@ -66,6 +67,14 @@ private:
   bool checkEventsInStep();
   int getEventsCurrent();
   void store_config();
+  QString getSelectedDataPath() const;
+  QString getRunDirectory(uint32_t run_n) const;
+  void ensureDirectoryExists(const QString &path) const;
+  void applyOutputPathToInitConfig();
+  void applyOutputPathToRunConfig();
+  void refreshConfiguredOutputTargets();
+  void saveConfigurationSnapshot(const QString &path,
+                                 eudaq::ConfigurationSPC conf) const;
   static std::map<int, QString> m_map_state_str;
   std::map<QString, QString> m_map_label_str;
   eudaq::RunControlUP m_rc;
@@ -85,7 +94,6 @@ private:
   QTimer m_scanningTimer;
   std::shared_ptr<eudaq::Configuration> m_scan_config;
   Scan m_scan;
-  std::string m_config_at_run_path;
 
   void updateProgressBar();
 };

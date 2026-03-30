@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <iostream>
+#include <filesystem>
 
 namespace eudaq {
   FileSerializer::FileSerializer(const std::string &fname, bool overwrite)
@@ -16,6 +17,10 @@ namespace eudaq {
         fclose(fd);
         EUDAQ_THROWX(FileExistsException, "File already exists: " + fname);
       }
+    }
+    std::filesystem::path output_path(fname);
+    if (!output_path.parent_path().empty()) {
+      std::filesystem::create_directories(output_path.parent_path());
     }
     m_file = fopen(fname.c_str(), "wb");
     if (!m_file)

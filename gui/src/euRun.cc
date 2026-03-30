@@ -1,20 +1,30 @@
 #include <QApplication>
 #include <QDateTime>
+#include <QFileInfo>
 #include <fstream>
 #include "euRun.hh"
 #include "Colours.hh"
+#include "eudaq/FileNamer.hh"
 #include "eudaq/Config.hh"
 
 using std::cout;
 using std::endl;
+
+namespace {
+QString patternFileName(const std::string &pattern, const QString &fallback) {
+  QFileInfo info(QString::fromStdString(pattern));
+  QString filename = info.fileName();
+  return filename.isEmpty() ? fallback : filename;
+}
+}
+
 RunControlGUI::RunControlGUI()
   : QMainWindow(0, 0),
     m_display_col(0),
     m_scan_active(false),
     m_scan_interrupt_received(false),
     m_save_config_at_run_start(true),
-    m_display_row(0),
-    m_config_at_run_path(""){
+    m_display_row(0){
     m_map_label_str = {{"RUN", "Run Number"}};
     qRegisterMetaType<QModelIndex>("QModelIndex");
     setupUi(this);
@@ -58,6 +68,8 @@ RunControlGUI::RunControlGUI()
     ->setText(settings.value("lastInitFile", "init file not set").toString());
   txtScanFile
     ->setText(settings.value("lastScanFile", "scan file not set").toString());
+  txtDataPath
+    ->setText(settings.value("lastDataPath", QDir::currentPath()).toString());
 
   settings.endGroup();
 
@@ -112,6 +124,7 @@ void RunControlGUI::on_btnInit_clicked(){
       return;
   if(m_rc){
     m_rc->ReadInitilizeFile(settings);
+    applyOutputPathToInitConfig();
     m_rc->Initialise();
   }
   // connect to the log collector - based on RunControl.cc implemtation
@@ -144,13 +157,13 @@ void RunControlGUI::on_btnConfig_clicked(){
   }
   if(m_rc){
     m_rc->ReadConfigureFile(settings);
+    applyOutputPathToRunConfig();
     m_rc->Configure();
   }
   if(m_rc)
   {
   eudaq::ConfigurationSPC conf = m_rc->GetConfiguration();
   conf->SetSection("RunControl");
-  m_config_at_run_path = conf->Get("config_log_path","");
   std::string additionalDisplays = conf->Get("ADDITIONAL_DISPLAY_NUMBERS","");
   if(additionalDisplays!="")
     addAdditionalStatus(additionalDisplays);
@@ -167,10 +180,13 @@ void RunControlGUI::on_btnStart_clicked(){
     }
     txtNextRunNumber->clear();
   }
+  applyOutputPathToInitConfig();
+  applyOutputPathToRunConfig();
+  refreshConfiguredOutputTargets();
+  if(m_save_config_at_run_start)
+    store_config();
   if(m_rc)
     m_rc->StartRun();
-  if(m_save_config_at_run_start)
-      store_config();
 }
 
 void RunControlGUI::on_btnStop_clicked() {
@@ -210,6 +226,19 @@ void RunControlGUI::on_btnLoadConf_clicked() {
 
 
 
+}
+
+void RunControlGUI::on_btnLoadDataPath_clicked() {
+  QString usedpath = txtDataPath->text().trimmed();
+  if (usedpath.isEmpty()) {
+    usedpath = QDir::currentPath();
+  }
+  QString dirname = QFileDialog::getExistingDirectory(
+      this, tr("Select Data Directory"), usedpath,
+      QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+  if (!dirname.isNull()) {
+    txtDataPath->setText(dirname);
+  }
 }
 
 void RunControlGUI::DisplayTimer(){
@@ -311,6 +340,7 @@ void RunControlGUI::closeEvent(QCloseEvent *event) {
     settings.setValue("lastConfigFile", txtConfigFileName->text());
     settings.setValue("lastInitFile", txtInitFileName->text());
     settings.setValue("lastScanFile", txtScanFile->text());
+    settings.setValue("lastDataPath", txtDataPath->text());
     settings.setValue("successexit", 1);
     settings.endGroup();
     if(m_rc)
@@ -758,9 +788,16 @@ int RunControlGUI::getEventsCurrent(){
 
 void RunControlGUI::store_config()
 {
-    std::string configFile = txtConfigFileName->text().toStdString();
-    std::string command = "cp "+configFile+" "+m_config_at_run_path+"config_run_"+std::to_string(m_rc->GetRunN())+".txt";
-    system(command.c_str());
+    if(!m_rc)
+        return;
+    uint32_t run_n = m_rc->GetRunN();
+    QString run_dir = getRunDirectory(run_n);
+    ensureDirectoryExists(run_dir);
+    QString run_tag = QString::fromStdString(eudaq::to_string(run_n, 3));
+    saveConfigurationSnapshot(QDir(run_dir).filePath("init_run" + run_tag + ".ini"),
+                              m_rc->GetInitConfiguration());
+    saveConfigurationSnapshot(QDir(run_dir).filePath("config_run" + run_tag + ".conf"),
+                              m_rc->GetConfiguration());
 }
 
 void RunControlGUI::updateProgressBar(){
@@ -780,4 +817,162 @@ void RunControlGUI::updateProgressBar(){
 void RunControlGUI::on_checkBox_stateChanged(int arg1)
 {
 m_save_config_at_run_start = arg1;
+}
+
+QString RunControlGUI::getSelectedDataPath() const {
+  QString data_path = txtDataPath->text().trimmed();
+  if (data_path.isEmpty()) {
+    data_path = QDir::currentPath();
+  } else if (data_path == "~") {
+    data_path = QDir::homePath();
+  } else if (data_path.startsWith("~/")) {
+    data_path = QDir::homePath() + data_path.mid(1);
+  }
+  return QDir(data_path).absolutePath();
+}
+
+QString RunControlGUI::getRunDirectory(uint32_t run_n) const {
+  QString run_folder =
+      QString::fromStdString(std::string(eudaq::FileNamer("run$3R").Set('R', run_n)));
+  return QDir(getSelectedDataPath()).filePath(run_folder);
+}
+
+void RunControlGUI::ensureDirectoryExists(const QString &path) const {
+  if (!QDir().mkpath(path)) {
+    EUDAQ_THROW("Unable to create directory: " + path.toStdString());
+  }
+}
+
+void RunControlGUI::applyOutputPathToInitConfig() {
+  if (!m_rc) {
+    return;
+  }
+  auto conf = std::const_pointer_cast<eudaq::Configuration>(m_rc->GetInitConfiguration());
+  if (!conf) {
+    return;
+  }
+  const QString base_dir = getSelectedDataPath();
+  const QString run_dir_pattern = "run$3R";
+  const QString cur_section = QString::fromStdString(conf->GetCurrentSectionName());
+  auto active_connections = m_rc->GetActiveConnections();
+  for (const auto &conn : active_connections) {
+    if (!conn || conn->GetType() != "LogCollector") {
+      continue;
+    }
+    const std::string section = conn->GetType() + "." + conn->GetName();
+    conf->SetSection(section);
+    QString file_name =
+        patternFileName(conf->Get("EULOG_GUI_LOG_FILE_PATTERN",
+                                  conf->Get("FILE_PATTERN", "EULog_$4R_$12D.log")),
+                        "EULog_$4R_$12D.log");
+    QString full_pattern = QDir(base_dir).filePath(run_dir_pattern + "/" + file_name);
+    conf->SetString("EULOG_GUI_LOG_FILE_PATTERN", full_pattern.toStdString());
+    conf->SetString("FILE_PATTERN", full_pattern.toStdString());
+  }
+  if (!cur_section.isEmpty()) {
+    conf->SetSection(cur_section.toStdString());
+  }
+}
+
+void RunControlGUI::applyOutputPathToRunConfig() {
+  if (!m_rc) {
+    return;
+  }
+  auto conf = std::const_pointer_cast<eudaq::Configuration>(m_rc->GetConfiguration());
+  if (!conf) {
+    return;
+  }
+  const QString base_dir = getSelectedDataPath();
+  const QString run_dir_pattern = "run$3R";
+  const QString cur_section = QString::fromStdString(conf->GetCurrentSectionName());
+  auto active_connections = m_rc->GetActiveConnections();
+  for (const auto &conn : active_connections) {
+    if (!conn) {
+      continue;
+    }
+    const std::string section = conn->GetType() + "." + conn->GetName();
+    if (conn->GetType() == "DataCollector") {
+      conf->SetSection(section);
+      QString file_name =
+          patternFileName(conf->Get("EUDAQ_FW_PATTERN", "run$3R$X"), "run$3R$X");
+      QString full_pattern = QDir(base_dir).filePath(run_dir_pattern + "/" + file_name);
+      conf->SetString("EUDAQ_FW_PATTERN", full_pattern.toStdString());
+    } else if (conn->GetType() == "LogCollector") {
+      conf->SetSection(section);
+      QString file_name =
+          patternFileName(conf->Get("EULOG_GUI_LOG_FILE_PATTERN",
+                                    conf->Get("FILE_PATTERN", "EULog_$4R_$12D.log")),
+                          "EULog_$4R_$12D.log");
+      QString full_pattern = QDir(base_dir).filePath(run_dir_pattern + "/" + file_name);
+      conf->SetString("EULOG_GUI_LOG_FILE_PATTERN", full_pattern.toStdString());
+      conf->SetString("FILE_PATTERN", full_pattern.toStdString());
+    }
+  }
+  conf->SetSection("RunControl");
+  conf->SetString("config_log_path", (base_dir + "/").toStdString());
+  if (!cur_section.isEmpty()) {
+    conf->SetSection(cur_section.toStdString());
+  }
+}
+
+void RunControlGUI::refreshConfiguredOutputTargets() {
+  if (!m_rc) {
+    return;
+  }
+  std::vector<eudaq::ConnectionSPC> targets;
+  auto map_conn_status = m_rc->GetActiveConnectionStatusMap();
+  for (const auto &conn_status : map_conn_status) {
+    if (!conn_status.first || !conn_status.second) {
+      continue;
+    }
+    const auto &conn = conn_status.first;
+    const auto state = conn_status.second->GetState();
+    if ((conn->GetType() == "DataCollector" || conn->GetType() == "LogCollector") &&
+        (state == eudaq::Status::STATE_CONF || state == eudaq::Status::STATE_STOPPED)) {
+      m_rc->ConfigureSingleConnection(conn);
+      targets.push_back(conn);
+    }
+  }
+  if (targets.empty()) {
+    return;
+  }
+  auto deadline = QDateTime::currentDateTime().addSecs(5);
+  while (QDateTime::currentDateTime() < deadline) {
+    bool all_ready = true;
+    auto current_status = m_rc->GetActiveConnectionStatusMap();
+    for (const auto &conn : targets) {
+      auto it = current_status.find(conn);
+      if (it == current_status.end() || !it->second) {
+        all_ready = false;
+        break;
+      }
+      auto state = it->second->GetState();
+      if (state == eudaq::Status::STATE_ERROR) {
+        return;
+      }
+      if (state != eudaq::Status::STATE_CONF) {
+        all_ready = false;
+        break;
+      }
+    }
+    if (all_ready) {
+      return;
+    }
+    QApplication::processEvents();
+    eudaq::mSleep(50);
+  }
+}
+
+void RunControlGUI::saveConfigurationSnapshot(const QString &path,
+                                              eudaq::ConfigurationSPC conf) const {
+  if (!conf) {
+    return;
+  }
+  QFileInfo info(path);
+  ensureDirectoryExists(info.dir().absolutePath());
+  std::ofstream out(path.toStdString());
+  if (!out.is_open()) {
+    EUDAQ_THROW("Unable to open configuration snapshot: " + path.toStdString());
+  }
+  conf->Save(out);
 }

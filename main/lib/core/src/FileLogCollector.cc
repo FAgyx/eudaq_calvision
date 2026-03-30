@@ -4,6 +4,7 @@
 #include "eudaq/Logger.hh"
 
 #include <iostream>
+#include <filesystem>
 #include <thread>
 #include <chrono>
 namespace eudaq{
@@ -12,10 +13,14 @@ namespace eudaq{
   public:
     FileLogCollector(const std::string &name, const std::string &runcontrol);
     void DoInitialise() override final;
+    void OnConfigure() override final;
+    void OnStartRun() override final;
+    void OnStopRun() override final;
     
     void DoReceive(const LogMessage &ev) override final;
     static const uint32_t m_id_factory = eudaq::cstr2hash("FileLogCollector");
   private:
+    void OpenRunLogFile();
     uint32_t m_level_write;
     uint32_t m_level_print;
     std::string m_file_pattern;
@@ -52,17 +57,62 @@ namespace eudaq{
     m_level_write = 0;
     m_level_print = 0;
     if(ini){
-      m_file_pattern = ini->Get("FILE_PATTERN", m_file_pattern);
+      m_file_pattern = ini->Get("FILE_PATTERN",
+                                ini->Get("EULOG_GUI_LOG_FILE_PATTERN", m_file_pattern));
       m_level_write = ini->Get("LOG_LEVEL_WRITE", m_level_write);
       m_level_print = ini->Get("LOG_LEVEL_PRINT", m_level_print);
     }
-    m_os_file.open(std::string(eudaq::FileNamer(m_file_pattern)
-			       .Set('D', m_start_time)).c_str(),
-		   std::ios_base::app);
+    if (m_os_file.is_open()) {
+      m_os_file.close();
+    }
+  }
+
+  void FileLogCollector::OnConfigure() {
+    auto conf = GetConfiguration();
+    if (conf) {
+      m_file_pattern = conf->Get("FILE_PATTERN",
+                                 conf->Get("EULOG_GUI_LOG_FILE_PATTERN", m_file_pattern));
+      m_level_write = conf->Get("LOG_LEVEL_WRITE", m_level_write);
+      m_level_print = conf->Get("LOG_LEVEL_PRINT", m_level_print);
+    }
+    eudaq::CommandReceiver::OnConfigure();
+  }
+
+  void FileLogCollector::OpenRunLogFile() {
+    if (m_os_file.is_open()) {
+      m_os_file.close();
+    }
+    std::time_t time_now = std::time(nullptr);
+    char time_buff[13];
+    time_buff[12] = 0;
+    std::strftime(time_buff, sizeof(time_buff),
+                  "%y%m%d%H%M%S", std::localtime(&time_now));
+    std::string start_time(time_buff);
+    std::string file_name = std::string(eudaq::FileNamer(m_file_pattern)
+                                        .Set('D', start_time)
+                                        .Set('R', GetRunNumber()));
+    std::filesystem::path file_path(file_name);
+    if (!file_path.parent_path().empty()) {
+      std::filesystem::create_directories(file_path.parent_path());
+    }
+    m_os_file.open(file_name.c_str(), std::ios_base::app);
     std::stringstream ss;
-    ss << "\n*** LogCollector started at " << Time::Current().Formatted()
-       << " ***\n";
-    m_os_file<<ss.str();
+    ss << "\n*** LogCollector started run " << GetRunNumber() << " at "
+       << Time::Current().Formatted() << " ***\n";
+    m_os_file << ss.str();
+  }
+
+  void FileLogCollector::OnStartRun() {
+    OpenRunLogFile();
+    eudaq::CommandReceiver::OnStartRun();
+  }
+
+  void FileLogCollector::OnStopRun() {
+    eudaq::CommandReceiver::OnStopRun();
+    if (m_os_file.is_open()) {
+      m_os_file.flush();
+      m_os_file.close();
+    }
   }
   
   void FileLogCollector::DoReceive(const eudaq::LogMessage &msg){

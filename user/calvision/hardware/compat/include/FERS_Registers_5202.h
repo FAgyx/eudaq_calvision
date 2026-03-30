@@ -1,0 +1,6 @@
+#ifndef CALVISION_FERS_REGISTERS_5202_COMPAT_H
+#define CALVISION_FERS_REGISTERS_5202_COMPAT_H
+
+#include "FERS_Registers_520X.h"
+
+#endif
