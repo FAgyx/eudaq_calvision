@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1520" height="900" viewBox="0 0 1520 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f7f8f3" />
+      <stop offset="100%" stop-color="#edf2e9" />
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#f7faf5" />
+    </linearGradient>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f5f8b" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7d4d" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b96a16" />
+    </marker>
+    <style>
+      text {
+        font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
+        fill: #203030;
+      }
+      .title {
+        font-size: 30px;
+        font-weight: 700;
+      }
+      .subtitle {
+        font-size: 15px;
+        fill: #4f6060;
+      }
+      .section {
+        font-size: 19px;
+        font-weight: 700;
+      }
+      .label {
+        font-size: 16px;
+        font-weight: 700;
+      }
+      .small {
+        font-size: 12px;
+        fill: #5c6a6a;
+      }
+      .tiny {
+        font-size: 11px;
+        fill: #355060;
+      }
+      .outer {
+        fill: url(#panel);
+        stroke: #b8c4b0;
+        stroke-width: 2;
+        rx: 28;
+        ry: 28;
+      }
+      .group {
+        fill: #fbfcf8;
+        stroke: #c7d1c1;
+        stroke-width: 2;
+        stroke-dasharray: 9 7;
+        rx: 22;
+        ry: 22;
+      }
+      .group-green {
+        fill: #f5faf2;
+        stroke: #2f7d4d;
+        stroke-width: 2.5;
+        stroke-dasharray: 12 8;
+        rx: 24;
+        ry: 24;
+      }
+      .box {
+        stroke-width: 2;
+        rx: 18;
+        ry: 18;
+      }
+      .blue {
+        fill: #d9ebf7;
+        stroke: #1f5f8b;
+      }
+      .green {
+        fill: #ddeedd;
+        stroke: #2f7d4d;
+      }
+      .gold {
+        fill: #f7edcf;
+        stroke: #b5882a;
+      }
+      .red {
+        fill: #f6dddd;
+        stroke: #a24d4d;
+      }
+      .gray {
+        fill: #edf0ec;
+        stroke: #687878;
+      }
+      .violet {
+        fill: #e7e0f2;
+        stroke: #6e5f8a;
+      }
+      .flow-blue {
+        stroke: #1f5f8b;
+        stroke-width: 4;
+        fill: none;
+        marker-end: url(#arrow-blue);
+      }
+      .flow-green {
+        stroke: #2f7d4d;
+        stroke-width: 4;
+        fill: none;
+        marker-end: url(#arrow-green);
+      }
+      .flow-orange {
+        stroke: #b96a16;
+        stroke-width: 4;
+        fill: none;
+        marker-end: url(#arrow-orange);
+      }
+      .flow-dash {
+        stroke-dasharray: 10 8;
+      }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1520" height="900" fill="url(#bg)" />
+
+  <text x="70" y="70" class="title">CalVision Runtime Structure</text>
+  <text x="70" y="98" class="subtitle">Hardware on the left, producers in the middle, collector/monitor on the right</text>
+
+  <rect x="60" y="140" width="1400" height="700" class="outer" />
+  <text x="100" y="185" class="section">Structure</text>
+
+  <rect x="350" y="350" width="930" height="480" class="group-green" />
+  <text x="378" y="382" class="small">CalVision module</text>
+
+  <rect x="100" y="230" width="220" height="86" class="box gold" />
+  <text x="128" y="282" class="label">CalVision run files</text>
+
+  <rect x="390" y="230" width="220" height="86" class="box blue" />
+  <text x="454" y="282" class="label">RunControl</text>
+
+  <rect x="820" y="230" width="180" height="86" class="box blue" />
+  <text x="888" y="282" class="label">euLog</text>
+
+  <rect x="100" y="390" width="180" height="86" class="box gray" />
+  <text x="123" y="442" class="label">DRS board(s)</text>
+
+  <rect x="100" y="520" width="180" height="86" class="box gray" />
+  <text x="117" y="572" class="label">FERS board(s)</text>
+
+  <rect x="100" y="680" width="220" height="86" class="box violet" />
+  <text x="132" y="732" class="label">hardware configs</text>
+
+  <rect x="390" y="720" width="220" height="86" class="box gray" />
+  <text x="438" y="772" class="label">shared memory</text>
+
+  <rect x="360" y="350" width="560" height="300" class="group" />
+  <text x="386" y="410" class="small">Acquisition</text>
+
+  <rect x="440" y="390" width="220" height="86" class="box red" />
+  <text x="493" y="442" class="label">DRSProducer</text>
+
+  <rect x="440" y="520" width="220" height="86" class="box red" />
+  <text x="495" y="572" class="label">FERSProducer</text>
+
+  <rect x="1030" y="412" width="220" height="34" class="box blue" />
+  <text x="1083" y="433" class="tiny">main EUDAQ base</text>
+  <rect x="1030" y="446" width="220" height="70" class="box green" />
+  <text x="1070" y="487" class="label">DataCollector</text>
+
+  <rect x="1030" y="592" width="220" height="34" class="box blue" />
+  <text x="1079" y="613" class="tiny">main EUDAQ base</text>
+  <rect x="1030" y="626" width="220" height="70" class="box green" />
+  <text x="1066" y="667" class="label">ROOTMonitor</text>
+
+  <path d="M 320 273 C 345 273, 365 273, 390 273" class="flow-orange flow-dash" />
+  <path d="M 610 273 C 700 273, 760 273, 820 273" class="flow-blue" />
+  <path d="M 610 273 C 720 273, 820 350, 1030 460" class="flow-blue" />
+
+  <path d="M 280 433 C 330 433, 380 433, 440 433" class="flow-blue" />
+  <path d="M 280 563 C 330 563, 380 563, 440 563" class="flow-blue" />
+
+  <path d="M 320 723 C 370 723, 410 470, 440 433" class="flow-orange flow-dash" />
+  <path d="M 320 723 C 370 723, 410 600, 440 563" class="flow-orange flow-dash" />
+
+  <path d="M 660 433 C 780 433, 900 433, 1030 470" class="flow-green" />
+  <path d="M 660 563 C 780 563, 900 500, 1030 492" class="flow-green" />
+
+  <path d="M 610 763 C 740 763, 880 763, 1030 661" class="flow-blue" />
+  <text x="760" y="744" class="small">status / monitoring values</text>
+  <path d="M 550 606 C 550 650, 550 685, 550 720" class="flow-blue" />
+  <path d="M 1140 516 C 1140 548, 1140 585, 1140 626" class="flow-green" />
+  <text x="1162" y="575" class="small">events</text>
+
+  <text x="70" y="875" class="small">Green dashed frame: CalVision module. Blue: core EUDAQ or control/runtime links. Green: CalVision implementation or event/monitor flow. Dashed orange: file-driven configuration.</text>
+</svg>

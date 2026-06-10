@@ -39,6 +39,7 @@ class DRSProducer : public eudaq::Producer {
 private:
   bool m_flag_ts;
   bool m_flag_tg;
+  bool m_debug_trigger_print;
   uint32_t m_plane_id;
   FILE* m_file_lock;
   std::chrono::milliseconds m_ms_busy;
@@ -88,7 +89,7 @@ namespace{
 //----------DOC-MARK-----END*REG-----DOC-MARK----------
 //----------DOC-MARK-----BEG*CON-----DOC-MARK----------
 DRSProducer::DRSProducer(const std::string & name, const std::string & runcontrol)
-  :eudaq::Producer(name, runcontrol), m_file_lock(0), m_exit_of_run(false){  
+  :eudaq::Producer(name, runcontrol), m_debug_trigger_print(false), m_file_lock(0), m_exit_of_run(false){  
 }
 //----------DOC-MARK-----BEG*INI-----DOC-MARK----------
 void DRSProducer::DoInitialise(){
@@ -234,6 +235,7 @@ void DRSProducer::DoConfigure(){
 
   m_flag_ts = conf->Get("DRS_ENABLE_TIMESTAMP", 0);
   m_flag_tg = conf->Get("DRS_ENABLE_TRIGERNUMBER", 0);
+  m_debug_trigger_print = conf->Get("DRS_DEBUG_TRIGGER_PRINT", 0);
   if(!m_flag_ts && !m_flag_tg){
     EUDAQ_WARN("Both Timestamp and TriggerNumber are disabled. Now, Timestamp is enabled by default");
     m_flag_ts = false;
@@ -576,12 +578,17 @@ void DRSProducer::RunLoop(){
 
 		     DRSpack_event(static_cast<void*>(&m_conn_ev[brd]),&data);
 
-	    	     ev->AddBlock(m_plane_id+brd, data);
-		} // loop over boards
+		     ev->AddBlock(m_plane_id+brd, data);
+			} // loop over boards
+
+			if (m_debug_trigger_print) {
+				EUDAQ_INFO("DRS trigger debug send"
+					+ std::string(" event_n=") + std::to_string(m_evt_c)
+					+ " trigger_n=" + std::to_string(trigger_n));
+			}
 
 
-
-	    	SendEvent(std::move(ev));
+		    	SendEvent(std::move(ev));
                 m_conn_ev.clear();
 
 

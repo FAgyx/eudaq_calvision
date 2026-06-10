@@ -18,7 +18,7 @@ HV_Vbias                           57 V                 # Bias voltage, Range=[2
 HV_Imax                            1.0 mA               # Max current provided by the HV. The HV will be shut down if the current exceeds this limit.
 HV_Adjust_Range                    4.5                  # DAC range for the individual HV adjust.. Options: 4.5, 2.5, DISABLED
 HV_IndivAdj                        255                  # DAC setting for the Individual HV Adjust. Range from 0 to 255
-TempSensType                       TMP37                # Temperature Sensor Type (or generic coefficients in the form "c0 c1 c2"). Options: TMP37, LM94021_G11, LM94021_G00
+TempSensType                       TMP37                # Temperature Sensor Type (or generic coefficients in the form "c0 c1 c2", T = V*V*c2 + V*c1 + c0). Options: TMP37, LM94021_G11, LM94021_G00
 TempFeedbackCoeff                  35                   # Temperature Feedback Coeff (mV/degC): Vout = Vset + k * (T-25)
 EnableTempFeedback                 0                    # Enable Vbias Temperature Feedback
 
@@ -35,19 +35,19 @@ JobFirstRun                        1                    # First Run of the Job
 JobLastRun                         5                    # Last Run of the Job
 RunSleep                           0 s                  # Wait Time between runs of a job
 EnableJobs                         0                    # Enable Jobs
-RunNumber_AutoIncr                 1                    # Run Number auto increment
+RunNumber_AutoIncr                 0                    # Run Number auto increment
 DataAnalysis                       ALL                  # Data Analysis Enable/disable mask. Options: ALL, CNT_ONLY, DISABLED
 DataFilePath                       DataFiles            # Destination folder to save the output files
 OF_OutFileUnit                     LSB                  # ToA and ToT unit. Options: LSB, ns
 OF_EnMaxSize                       0                    # Enable List file maximum size (Raw, binary, ASCII, CSV)
 OF_MaxSize                         1 GB                 # Max size of List files (in Bytes), minimum size allowed 1 MB
 OF_RawData                         0                    # Event List file (Raw data)
-OF_ListBin                         1                    # Event List file (binary)
+OF_ListBin                         0                    # Event List file (binary)
 OF_ListAscii                       0                    # Event List file (ASCII)
 OF_ListCSV                         0                    # Event List file (CSV)
 OF_Sync                            0                    # List with BrdID-Tstamp-TrgID (for sync check)
 OF_ServiceInfo                     0                    # Service event info (temperature, Vmon, Imon, HVstatus)
-OF_RunInfo                         1                    # Run Info
+OF_RunInfo                         0                    # Run Info
 OF_SpectHisto                      0                    # PHA spectrum
 OF_ToAHisto                        0                    # ToA spectrum
 OF_ToTHisto                        0                    # ToT spectrum
@@ -72,9 +72,9 @@ TriggerLogic                       OR64                 # Trigger Logic (Combina
 Tlogic_Width                       0 ns                 # TriggerLogic output width (0=linear)
 MajorityLevel                      3                    # Majority Level (1 to 64)
 PtrgPeriod                         1 ms                 # Period of the internal periodic trigger
-TrefSource                         T0-IN                # Tref source for timing mode (common start/stop). Options: T0-IN, T1-IN, Q-OR, T-OR, PTRG, TLOGIC
+TrefSource                         T1-IN                # Tref source for timing mode (common start/stop). Options: T0-IN, T1-IN, Q-OR, T-OR, PTRG, TLOGIC
 TrefWindow                         1.0 us               # Tref window (gate) in timing mode (common start/stop)
-TrefDelay                          -100 ns              # Tref delay in timing mode (can be negative)
+TrefDelay                          0 ns                 # Tref delay in timing mode (can be negative)
 T0_Out                             BUNCHTRG             # T0_Out assignment. Options: T0-IN, BUNCHTRG, T-OR, TLOGIC, RUN, PTRG, BUSY, DPROBE, SQ_WAVE, TDL_SYNC, RUN_SYNC, ZERO
 T1_Out                             T1-IN                # T1_Out assignment. Options: T1-IN, BUNCHTRG, Q-OR, TLOGIC, RUN, PTRG, BUSY, DPROBE, SQ_WAVE, TDL_SYNC, RUN_SYNC, ZERO
 ChEnableMask0                      0xFFFFFFFF           # Channel enable mask (ch 0..31)
@@ -98,8 +98,8 @@ Q_DiscrMask1                       0xFFFFFFFF           # Q-OR Channel enable ma
 # Spectroscopy
 # ------------------------------------------------------------------------------------------
 GainSelect                         BOTH                 # Gain selection in output data format. It can be both HG and LG, HG or LG only or automatic (HG if not saturated, LG otherwise). Options: HIGH, LOW, AUTO, BOTH
-HG_Gain                            30                   # High Gain Setting (1 to 63)
-LG_Gain                            35                   # Low Gain Setting (1 to 63)
+HG_Gain                            35                   # High Gain Setting (1 to 63)
+LG_Gain                            50                   # Low Gain Setting (1 to 63)
 Pedestal                           50                   # Common Pedestal in channels (ADC reading with no input signal)
 ZS_Threshold_LG                    0                    # Threshold for Zero Suppression (LG)
 ZS_Threshold_HG                    0                    # Threshold for Zero Suppression (HG)
@@ -132,3 +132,4 @@ TestPulsePreamp                    BOTH                 # Test pulse can feed bo
 # ******************************************************************************************
 # Board and Channel settings (overwrite default settings)
 # ******************************************************************************************
+

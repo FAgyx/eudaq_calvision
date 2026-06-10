@@ -71,7 +71,7 @@ add_library(${EUDAQ_MODULE} SHARED ${MODULE_SRC})
 target_link_libraries(${EUDAQ_MODULE} ${EUDAQ_CORE_LIBRARY} ${EXTERNAL_LIB_QT})
 list(APPEND INSTALL_TARGETS ${EUDAQ_MODULE})
 
-add_executable(euLog src/euLog.cxx src/euLog.rc)
+add_executable(euLog ${LOG_GUI_SRC} ${euLog_UISrcs} ${euLog_MOCSrcs} src/euLog.rc)
 set_property(TARGET euLog PROPERTY PROJECT_LABEL "BinEuLog") 
 target_link_libraries(euLog ${EUDAQ_CORE_LIBRARY} ${EXTERNAL_LIB_QT})
 list(APPEND INSTALL_TARGETS euLog)

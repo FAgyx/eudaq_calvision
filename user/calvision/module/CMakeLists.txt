@@ -1,4 +1,11 @@
-include_directories(include /usr/include)
+include_directories(
+  include
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/monitors/rootmonitor/include
+  ${ROOT_INCLUDE_DIRS}
+  /home/softwares/root/include
+  /usr/include/root
+  /usr/include)
 link_directories(/usr/lib)
 link_directories(/usr/lib/x86_64-linux-gnu)
 aux_source_directory(src MODULE_SRC)

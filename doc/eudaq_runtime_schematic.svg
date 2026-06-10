@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="920" viewBox="0 0 1400 920">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f6f7f2" />
+      <stop offset="100%" stop-color="#eef2e8" />
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#f5f8ef" />
+    </linearGradient>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f5f8b" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7d4d" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b96a16" />
+    </marker>
+    <style>
+      text {
+        font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
+        fill: #203030;
+      }
+      .title {
+        font-size: 30px;
+        font-weight: 700;
+      }
+      .subtitle {
+        font-size: 15px;
+        fill: #476060;
+      }
+      .section {
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .label {
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .body {
+        font-size: 14px;
+      }
+      .small {
+        font-size: 12px;
+        fill: #5a6a6a;
+      }
+      .box {
+        fill: url(#panel);
+        stroke: #486060;
+        stroke-width: 2;
+        rx: 18;
+        ry: 18;
+      }
+      .accent-blue {
+        fill: #d9ebf7;
+        stroke: #1f5f8b;
+      }
+      .accent-green {
+        fill: #ddeedd;
+        stroke: #2f7d4d;
+      }
+      .accent-gold {
+        fill: #f7edcf;
+        stroke: #b5882a;
+      }
+      .accent-red {
+        fill: #f6dddd;
+        stroke: #a24d4d;
+      }
+      .accent-gray {
+        fill: #edf0ec;
+        stroke: #687878;
+      }
+      .flow-blue {
+        stroke: #1f5f8b;
+        stroke-width: 4;
+        fill: none;
+        marker-end: url(#arrow-blue);
+      }
+      .flow-green {
+        stroke: #2f7d4d;
+        stroke-width: 4;
+        fill: none;
+        marker-end: url(#arrow-green);
+      }
+      .flow-orange {
+        stroke: #b96a16;
+        stroke-width: 4;
+        fill: none;
+        marker-end: url(#arrow-orange);
+      }
+      .flow-dash {
+        stroke-dasharray: 10 8;
+      }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="920" fill="url(#bg)" />
+
+  <text x="70" y="70" class="title">EUDAQ Runtime Structure</text>
+  <text x="70" y="98" class="subtitle">Schematic derived from README.md and the core RunControl / CommandReceiver flow</text>
+
+  <rect x="60" y="140" width="1280" height="720" rx="28" ry="28" fill="#fbfcf8" stroke="#b8c4b0" stroke-width="2"/>
+
+  <text x="110" y="190" class="section">1. Launchers and configuration</text>
+
+  <rect x="100" y="220" width="220" height="105" class="box accent-blue" />
+  <text x="125" y="252" class="label">GUI launcher</text>
+  <text x="125" y="278" class="body">`euRun`</text>
+  <text x="125" y="300" class="small">Qt RunControl GUI</text>
+
+  <rect x="100" y="350" width="220" height="105" class="box accent-blue" />
+  <text x="125" y="382" class="label">CLI launcher</text>
+  <text x="125" y="408" class="body">`euCliRun`</text>
+  <text x="125" y="430" class="small">headless RunControl entrypoint</text>
+
+  <rect x="100" y="500" width="220" height="140" class="box accent-gold" />
+  <text x="125" y="532" class="label">Run files</text>
+  <text x="125" y="558" class="body">`.ini` init file</text>
+  <text x="125" y="582" class="body">`.conf` config file</text>
+  <text x="125" y="608" class="body">optional `.scan` file</text>
+
+  <text x="395" y="190" class="section">2. Central coordinator</text>
+
+  <rect x="360" y="220" width="380" height="420" class="box accent-gray" />
+  <text x="390" y="258" class="label">RunControl</text>
+  <text x="390" y="285" class="body">command server and state coordinator</text>
+  <text x="390" y="315" class="body">listens for DAQ components on `tcp://44000` by default</text>
+  <text x="390" y="350" class="body">Responsibilities</text>
+  <text x="410" y="378" class="body">- accept component connections</text>
+  <text x="410" y="404" class="body">- track per-component status</text>
+  <text x="410" y="430" class="body">- broadcast lifecycle commands</text>
+  <text x="410" y="456" class="body">- sequence startup and shutdown order</text>
+  <text x="410" y="482" class="body">- poll status once per second</text>
+  <text x="390" y="522" class="body">Main state path</text>
+  <text x="410" y="548" class="body">UNINIT -> UNCONF -> CONF -> RUNNING -> STOPPED</text>
+  <text x="390" y="588" class="small">Control commands: INIT, CONFIG, START, STOP, RESET, TERMINATE, STATUS</text>
+
+  <text x="810" y="190" class="section">3. Connected runtime components</text>
+
+  <rect x="790" y="220" width="230" height="120" class="box accent-green" />
+  <text x="815" y="252" class="label">LogCollector</text>
+  <text x="815" y="278" class="body">receives log stream</text>
+  <text x="815" y="302" class="small">started early so other parts can log</text>
+
+  <rect x="1070" y="220" width="230" height="120" class="box accent-green" />
+  <text x="1095" y="252" class="label">Monitor</text>
+  <text x="1095" y="278" class="body">online monitoring / visualization</text>
+  <text x="1095" y="302" class="small">receives configured server address</text>
+
+  <rect x="790" y="400" width="230" height="140" class="box accent-green" />
+  <text x="815" y="432" class="label">DataCollector</text>
+  <text x="815" y="458" class="body">collects event data</text>
+  <text x="815" y="482" class="body">must be running before producers</text>
+  <text x="815" y="506" class="small">RunControl injects collector address into config</text>
+
+  <rect x="1070" y="400" width="230" height="180" class="box accent-red" />
+  <text x="1095" y="432" class="label">Producer(s)</text>
+  <text x="1095" y="458" class="body">hardware or software data sources</text>
+  <text x="1095" y="482" class="body">connect to RunControl via CommandReceiver</text>
+  <text x="1095" y="506" class="body">send event stream to DataCollector</text>
+  <text x="1095" y="530" class="small">multiple producers are common</text>
+  <text x="1095" y="554" class="small">optionally one producer can be last-start / first-stop</text>
+
+  <text x="110" y="700" class="section">4. Flow legend</text>
+
+  <line x1="120" y1="735" x2="220" y2="735" class="flow-blue" />
+  <text x="240" y="740" class="body">blue = control / status link</text>
+
+  <line x1="500" y1="735" x2="600" y2="735" class="flow-green" />
+  <text x="620" y="740" class="body">green = event data path</text>
+
+  <line x1="900" y1="735" x2="1000" y2="735" class="flow-orange flow-dash" />
+  <text x="1020" y="740" class="body">orange dashed = logs / config files</text>
+
+  <path d="M 320 272 C 340 272, 345 272, 360 272" class="flow-blue" />
+  <path d="M 320 402 C 340 402, 345 402, 360 402" class="flow-blue" />
+  <path d="M 320 570 C 340 570, 345 570, 360 570" class="flow-orange flow-dash" />
+
+  <path d="M 740 280 C 760 280, 770 280, 790 280" class="flow-blue" />
+  <path d="M 740 340 C 900 340, 915 280, 1070 280" class="flow-blue" />
+  <path d="M 740 430 C 760 430, 770 430, 790 430" class="flow-blue" />
+  <path d="M 740 510 C 900 510, 915 490, 1070 490" class="flow-blue" />
+
+  <path d="M 1070 505 C 1045 505, 1045 470, 1020 470" class="flow-green" />
+
+  <path d="M 1185 400 C 1185 360, 905 360, 905 340" class="flow-orange flow-dash" />
+  <path d="M 905 340 C 905 360, 905 390, 905 400" class="flow-orange flow-dash" />
+  <path d="M 905 340 C 905 320, 905 300, 905 280" class="flow-orange flow-dash" />
+
+  <text x="760" y="650" class="section">Typical startup order</text>
+  <text x="760" y="680" class="body">RunControl -> LogCollector / Monitor -> DataCollector -> Producer(s)</text>
+  <text x="760" y="708" class="body">Typical stop order reverses producer activity before collector shutdown.</text>
+
+  <text x="70" y="890" class="small">File generated to summarize the README/runtime structure. Safe assumption: "structure" refers to the DAQ runtime architecture rather than the directory tree.</text>
+</svg>

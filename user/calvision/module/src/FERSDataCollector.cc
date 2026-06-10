@@ -26,6 +26,7 @@ private:
   std::set<eudaq::ConnectionSPC> m_expected_connections;
 
   uint32_t m_noprint;
+  bool m_sync_events;
 };
 
 namespace{
@@ -36,7 +37,8 @@ namespace{
 
 FERSDataCollector::FERSDataCollector(const std::string &name,
 				       const std::string &rc):
-  DataCollector(name, rc){
+  DataCollector(name, rc),
+  m_sync_events(true){
 }
 
 void FERSDataCollector::DoConnect(eudaq::ConnectionSPC idx){
@@ -58,16 +60,19 @@ void FERSDataCollector::DoDisconnect(eudaq::ConnectionSPC idx){
 
 void FERSDataCollector::DoConfigure(){
   m_noprint = 0;
+  m_sync_events = true;
   auto conf = GetConfiguration();
   if(conf){
     conf->Print();
     m_noprint = conf->Get("FERS_DISABLE_PRINT", 0);
+    m_sync_events = conf->Get("FERS_ENABLE_EVENT_SYNC", 1);
   }
 }
 
 void FERSDataCollector::DoReset(){
   std::unique_lock<std::mutex> lk(m_mtx_map);
   m_noprint = 0;
+  m_sync_events = true;
   m_conn_evque.clear();
   m_conn_inactive.clear();
 }
@@ -77,6 +82,18 @@ void FERSDataCollector::DoReceive(eudaq::ConnectionSPC idx, eudaq::EventSP evsp)
   if(!evsp->IsFlagTrigger()){
     EUDAQ_THROW("!evsp->IsFlagTrigger()");
   }
+
+  if(!m_sync_events){
+    auto ev_async = eudaq::Event::MakeUnique("FERSDRS");
+    ev_async->SetFlagPacket();
+    ev_async->SetTriggerN(evsp->GetTriggerN());
+    ev_async->AddSubEvent(evsp);
+    if(!m_noprint)
+      ev_async->Print(std::cout);
+    WriteEvent(std::move(ev_async));
+    return;
+  }
+
   m_conn_evque[idx].push_back(evsp);
 
   uint32_t trigger_n = -1;

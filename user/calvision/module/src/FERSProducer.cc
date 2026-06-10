@@ -51,6 +51,33 @@ Config_t WDcfg;
 struct shmseg *shmp;
 int shmid;
 
+namespace {
+constexpr int kDebugUnknownQualifier = std::numeric_limits<int>::lowest();
+
+long long DebugWallNowMs() {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+long long DebugElapsedMs(const std::chrono::steady_clock::time_point &start_time) {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - start_time).count();
+}
+
+std::string DebugQualifierToString(int data_qualifier) {
+	if (data_qualifier == kDebugUnknownQualifier) {
+		return "NA";
+	}
+	return std::to_string(data_qualifier);
+}
+
+std::string DebugTriggerToString(bool have_trigger, uint64_t trigger_id) {
+	if (!have_trigger) {
+		return "NA";
+	}
+	return std::to_string(trigger_id);
+}
+}
 
 
 
@@ -70,6 +97,8 @@ class FERSProducer : public eudaq::Producer {
 		size_t splitStringToIntArray(const std::string& input, char delimiter, int* result, size_t maxSize);
 		int read_pedestal(const char *filename, int pid, uint16_t lgped[64], uint16_t hgped[64]);
 		int check_TRIG_alignment();
+		void DebugStartupCheckpoint(const std::string &phase);
+		void DebugStartupSetLastDQ(int data_qualifier);
 		static const uint32_t m_id_factory = eudaq::cstr2hash("FERSProducer");
 
 	private:
@@ -82,11 +111,14 @@ class FERSProducer : public eudaq::Producer {
 		bool m_exit_of_run;
 		int no_trigg = -1;
 		int sw_trigger = 0;
-		int spill_detect = 0;
-		int read_boards = 0;
-		int disable_ped = 0;
-		std::array<uint32_t, FERSLIB_MAX_NBRD> m_t1_out_mask{};
+			int spill_detect = 0;
+			int read_boards = 0;
+			int disable_ped = 0;
+			bool m_debug_startup = false;
+			bool m_debug_trigger_print = false;
+			std::array<uint32_t, FERSLIB_MAX_NBRD> m_t1_out_mask{};
 		std::array<int, FERSLIB_MAX_NBRD> m_start_run_mode{};
+		std::chrono::steady_clock::time_point m_debug_start_run_tp{};
 
 		std::string c_ip;
 	        int cnc=0;
@@ -129,6 +161,23 @@ namespace{
 FERSProducer::FERSProducer(const std::string & name, const std::string & runcontrol)
 	:eudaq::Producer(name, runcontrol), m_file_lock(0), m_exit_of_run(false)
 {  
+}
+
+void FERSProducer::DebugStartupCheckpoint(const std::string &phase) {
+	if (!m_debug_startup) {
+		return;
+	}
+	SetStatusTag("FERS_DBG_PHASE", phase);
+	EUDAQ_INFO("FERS startup debug phase=" + phase
+		+ " wall_ms=" + std::to_string(DebugWallNowMs())
+		+ " elapsed_ms=" + std::to_string(DebugElapsedMs(m_debug_start_run_tp)));
+}
+
+void FERSProducer::DebugStartupSetLastDQ(int data_qualifier) {
+	if (!m_debug_startup) {
+		return;
+	}
+	SetStatusTag("FERS_DBG_LAST_DQ", DebugQualifierToString(data_qualifier));
 }
 
 //----------DOC-MARK-----BEG*INI-----DOC-MARK----------
@@ -331,8 +380,10 @@ void FERSProducer::DoConfigure(){
 	read_boards = conf->Get("FERS_DIRECT_READ", 0);
 	no_trigg = conf->Get("FERS_NO_TRIGG", 1);
 	spill_detect = conf->Get("FERS_SPILL_DETECT", 0);
-	sw_trigger = conf->Get("FERS_SW_TRIGGER", 0);
-	m_plane_id = conf->Get("EX0_PLANE_ID", 100);
+		sw_trigger = conf->Get("FERS_SW_TRIGGER", 0);
+		m_debug_startup = conf->Get("FERS_DEBUG_STARTUP", 0);
+		m_debug_trigger_print = conf->Get("FERS_DEBUG_TRIGGER_PRINT", 0);
+		m_plane_id = conf->Get("EX0_PLANE_ID", 100);
 	m_ms_busy = std::chrono::milliseconds(conf->Get("EX0_DURATION_BUSY_MS", 1000));
 	m_us_evt_length = std::chrono::microseconds(60); // used in readou.
 
@@ -465,11 +516,29 @@ void FERSProducer::DoConfigure(){
 //----------DOC-MARK-----BEG*RUN-----DOC-MARK----------
 void FERSProducer::DoStartRun(){
 	m_exit_of_run = false;
+	m_debug_start_run_tp = std::chrono::steady_clock::now();
+	if (m_debug_startup) {
+		SetStatusTag("FERS_DBG_LAST_DQ", "NA");
+		DebugStartupCheckpoint("start_enter");
+	}
 
 	std::chrono::time_point<std::chrono::high_resolution_clock> tp_start_aq = std::chrono::high_resolution_clock::now();
 	shmp->FERS_Aqu_start_time_us=tp_start_aq;
 
+	if (!sw_trigger) {
+		// Restore T1 routing before acquisition starts to avoid slow USB register writes on an active stream.
+		DebugStartupCheckpoint("start_before_restore_t1");
+		for (int brd = 0; brd < shmp->connectedboards[fers_group]; brd++) {
+			FERS_WriteRegister(shmp->handle[fers_group][brd], a_t1_out_mask, m_t1_out_mask[brd]);
+		}
+		EUDAQ_INFO("FERS: Restored configured T1 LEMO routing");
+		DebugStartupCheckpoint("start_after_restore_t1");
+	} else {
+		DebugStartupCheckpoint("start_skip_restore_t1");
+	}
+
 	int start_mode = shmp->connectedboards[fers_group] > 0 ? m_start_run_mode[0] : STARTRUN_ASYNC;
+	DebugStartupCheckpoint("start_before_acq");
 	int ret = FERS_StartAcquisition(
 		shmp->handle[fers_group],
 		shmp->connectedboards[fers_group],
@@ -478,23 +547,17 @@ void FERSProducer::DoStartRun(){
 	if (ret != 0) {
 		EUDAQ_THROW("FERS_StartAcquisition failed with ret = " + std::to_string(ret));
 	}
+	DebugStartupCheckpoint("start_after_acq");
 
 	for(brd =0; brd < shmp->connectedboards[fers_group]; brd++) { // loop over boards
 		m_conn_evque[brd].clear();
 	}
+	DebugStartupCheckpoint("start_after_queue_clear");
 	EUDAQ_INFO("FERS_ReadoutStatus (0=idle, 1=running) = "+std::to_string(FERS_ReadoutStatus));
-	//std::this_thread::sleep_for(std::chrono::seconds(3));
-	sleep(3);
-
-		if (!sw_trigger) {
-			for( int brd = 0 ; brd<shmp->connectedboards[fers_group];brd++) {
-				FERS_WriteRegister(shmp->handle[fers_group][brd], a_t1_out_mask, m_t1_out_mask[brd]);
-				//FERS_WriteRegister(shmp->handle[fers_group][brd], a_t0_out_mask, 32); // Sends BUSY status
-			}
-			EUDAQ_INFO("FERS: Restored configured T1 LEMO routing");
-			shmp->FERS_last_event_time_us=std::chrono::high_resolution_clock::now();
-			shmp->DRS_last_event_time_us=std::chrono::high_resolution_clock::now();
-		}
+	DebugStartupCheckpoint("start_post_sleep_removed");
+	shmp->FERS_last_event_time_us=std::chrono::high_resolution_clock::now();
+	shmp->DRS_last_event_time_us=std::chrono::high_resolution_clock::now();
+	DebugStartupCheckpoint("start_return");
 
 /*
                         if (streq(value, "T1-IN"))                      FERScfg[brd]->T1_outMask = 0x001;
@@ -624,24 +687,119 @@ void FERSProducer::RunLoop(){
         }
 
 	int newData =0; 
-	auto time_diff = std::chrono::system_clock::now() - shmp->FERS_LastSrvEvent_us[fers_group][0];
-	auto time_diff_sec = std::chrono::duration_cast<std::chrono::seconds>(time_diff);
-	if (time_diff_sec.count()>2){
-		for (int ibrd = 0; ibrd < shmp->connectedboards[fers_group]; ibrd++) {
-			int ret;
-			float tempFPGA,tempDetector,hv_Vmon,hv_Imon;
-                	ret |= FERS_HV_Get_Vmon(shmp->handle[fers_group][ibrd], &hv_Vmon);
-	                ret |= FERS_HV_Get_Imon(shmp->handle[fers_group][ibrd], &hv_Imon);
-   			ret |= FERS_HV_Get_DetectorTemp(shmp->handle[fers_group][ibrd], &tempDetector);
-			ret |= FERS_Get_FPGA_Temp(shmp->handle[fers_group][ibrd], &tempFPGA);
-			shmp->tempFPGA[fers_group][ibrd]=tempFPGA;
-			shmp->tempDet[fers_group][ibrd]=tempDetector;
-			shmp->hv_Vmon[fers_group][ibrd]=hv_Vmon;
-			shmp->hv_Imon[fers_group][ibrd]=hv_Imon;
-
-			shmp->FERS_LastSrvEvent_us[fers_group][shmp->connectedboards[fers_group]]=std::chrono::high_resolution_clock::now();
-		}
+	uint64_t debug_read_attempts = 0;
+	uint64_t debug_empty_reads = 0;
+	uint64_t debug_accepted_reads = 0;
+	uint64_t debug_rejected_reads = 0;
+	int debug_last_dq = kDebugUnknownQualifier;
+	int debug_last_nb = -1;
+	int debug_last_status = -1;
+	int debug_last_board = -1;
+	uint64_t debug_last_trigger = 0;
+	bool debug_have_last_trigger = false;
+	bool debug_logged_first_accepted = false;
+	bool debug_logged_first_send = false;
+	long long debug_last_read_ms = -1;
+	long long debug_max_read_ms = -1;
+	std::string debug_last_read_api = "NA";
+	std::string debug_max_read_api = "NA";
+	auto debug_next_summary = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	if (m_debug_startup) {
+		DebugStartupCheckpoint("runloop_enter");
+		SetStatusTag("FERS_DBG_PHASE", "runloop_wait_first_send");
 	}
+	auto debug_note_read = [&](const std::string &read_api,
+		int board_index,
+		int data_qualifier,
+		int data_words,
+		int read_status,
+		long long read_call_ms,
+		void *event_ptr) {
+		if (!m_debug_startup || debug_logged_first_send) {
+			return;
+		}
+		debug_read_attempts++;
+		debug_last_read_api = read_api;
+		debug_last_board = board_index;
+		debug_last_dq = data_qualifier;
+		debug_last_nb = data_words;
+		debug_last_status = read_status;
+		debug_last_read_ms = read_call_ms;
+		if (read_call_ms > debug_max_read_ms) {
+			debug_max_read_ms = read_call_ms;
+			debug_max_read_api = read_api;
+		}
+		DebugStartupSetLastDQ(data_qualifier);
+		EUDAQ_INFO("FERS startup debug read_call"
+			+ std::string(" wall_ms=") + std::to_string(DebugWallNowMs())
+			+ " elapsed_ms=" + std::to_string(DebugElapsedMs(m_debug_start_run_tp))
+			+ " api=" + read_api
+			+ " board=" + std::to_string(board_index)
+			+ " call_ms=" + std::to_string(read_call_ms)
+			+ " status=" + std::to_string(read_status)
+			+ " nb=" + std::to_string(data_words)
+			+ " dq=" + DebugQualifierToString(data_qualifier)
+			+ " trigger=" + DebugTriggerToString(debug_have_last_trigger, debug_last_trigger));
+		if (data_words == 0) {
+			debug_empty_reads++;
+			return;
+		}
+		if (data_words > 0 && data_qualifier == 17) {
+			debug_accepted_reads++;
+			if (event_ptr != nullptr) {
+				SpectEvent_t* event_spect = static_cast<SpectEvent_t*>(event_ptr);
+				debug_last_trigger = event_spect->trigger_id;
+				debug_have_last_trigger = true;
+			}
+			return;
+		}
+		if (data_words > 0) {
+			debug_rejected_reads++;
+		}
+	};
+	auto debug_log_first_accepted = [&](int board_index, int data_qualifier, const SpectEvent_t &event_spect) {
+		if (!m_debug_startup || debug_logged_first_accepted) {
+			return;
+		}
+		debug_logged_first_accepted = true;
+		SetStatusTag("FERS_DBG_PHASE", "first_accepted");
+		DebugStartupSetLastDQ(data_qualifier);
+		EUDAQ_INFO("FERS startup debug first_accepted"
+			+ std::string(" wall_ms=") + std::to_string(DebugWallNowMs())
+			+ " elapsed_ms=" + std::to_string(DebugElapsedMs(m_debug_start_run_tp))
+			+ " board=" + std::to_string(board_index)
+			+ " dq=" + std::to_string(data_qualifier)
+			+ " trigger_id=" + std::to_string(event_spect.trigger_id));
+	};
+	auto debug_maybe_log_summary = [&](const std::string &phase) {
+		if (!m_debug_startup || debug_logged_first_send) {
+			return;
+		}
+		auto now = std::chrono::steady_clock::now();
+		if (now < debug_next_summary) {
+			return;
+		}
+		SetStatusTag("FERS_DBG_PHASE", phase);
+		EUDAQ_INFO("FERS startup debug summary phase=" + phase
+			+ " wall_ms=" + std::to_string(DebugWallNowMs())
+			+ " elapsed_ms=" + std::to_string(DebugElapsedMs(m_debug_start_run_tp))
+			+ " read_attempts=" + std::to_string(debug_read_attempts)
+			+ " nb_zero=" + std::to_string(debug_empty_reads)
+			+ " dq17=" + std::to_string(debug_accepted_reads)
+			+ " dq_other=" + std::to_string(debug_rejected_reads)
+			+ " last_status=" + std::to_string(debug_last_status)
+			+ " last_nb=" + std::to_string(debug_last_nb)
+			+ " last_dq=" + DebugQualifierToString(debug_last_dq)
+			+ " last_api=" + debug_last_read_api
+			+ " last_call_ms=" + std::to_string(debug_last_read_ms)
+			+ " max_call_ms=" + std::to_string(debug_max_read_ms)
+			+ " max_api=" + debug_max_read_api
+			+ " last_board=" + std::to_string(debug_last_board)
+			+ " last_trigger=" + DebugTriggerToString(debug_have_last_trigger, debug_last_trigger));
+		debug_next_summary = now + std::chrono::seconds(1);
+	};
+	// Skip proactive HV/temperature register polling before the first readout event.
+	// Janus relies on service data during the run and avoids this eager USB access.
 
 	while(!m_exit_of_run){
 
@@ -707,22 +865,30 @@ void FERSProducer::RunLoop(){
 					FERS_SendCommand(shmp->handle[fers_group][ibrd], CMD_TRG);   // SW trg
 				}
 
+				const std::string debug_read_api = shmp->FERS_TDLink[fers_group][ibrd]
+					? "FERS_GetEvent"
+					: "FERS_GetEventFromBoard";
+				auto debug_read_tp = std::chrono::steady_clock::now();
 				if (shmp->FERS_TDLink[fers_group][ibrd]) {
 					status = FERS_GetEvent(shmp->handle[fers_group], &iibrd, &DataQualifier, &tstamp_us, &Event, &nb);
 				}else{
 					status = FERS_GetEventFromBoard(shmp->handle[fers_group][ibrd], &DataQualifier, &tstamp_us, &Event, &nb);
 				}
+				long long debug_read_call_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - debug_read_tp).count();
 
 
 				if(status<0){
 			            EUDAQ_THROW("FERS: Readout failure,  ret = " + std::to_string(status)+" board = "+std::to_string(iibrd));
 				}
 
+				debug_note_read(debug_read_api, iibrd, DataQualifier, nb, status, debug_read_call_ms, Event);
 
 
 				if(nb>0&&DataQualifier==17) { // Data event in Spec 
 					newData++; // data - events*boards
 					SpectEvent_t* EventSpect = (SpectEvent_t*)Event;
+					debug_log_first_accepted(iibrd, DataQualifier, *EventSpect);
 					m_conn_evque[iibrd].push_back(*EventSpect);
 					if(EventSpect->trigger_id > shmp->FERS_last_trigID[fers_group][iibrd]){
 	   		  			shmp->FERS_last_event_time_us=std::chrono::high_resolution_clock::now();
@@ -737,19 +903,25 @@ void FERSProducer::RunLoop(){
 			}else{
  			   DataQualifier=1000;
 		           while(newData < shmp->connectedboards[fers_group]&&DataQualifier>0) { // read all data from the boards
+				auto debug_read_tp = std::chrono::steady_clock::now();
 				status = FERS_GetEvent(shmp->handle[fers_group], &bindex, &DataQualifier, &tstamp_us, &Event, &nb);
+				long long debug_read_call_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - debug_read_tp).count();
 				if(status<0){
 			            EUDAQ_THROW("FERS: Readout failure,  ret = " + std::to_string(status));
 				    
 				}
+				debug_note_read("FERS_GetEvent", bindex, DataQualifier, nb, status, debug_read_call_ms, Event);
 				if(nb>0&&DataQualifier==17) { // Data event in Spec 
 					newData++; // data - events*boards
 					SpectEvent_t* EventSpect = (SpectEvent_t*)Event;
+					debug_log_first_accepted(bindex, DataQualifier, *EventSpect);
 					m_conn_evque[bindex].push_back(*EventSpect);
 
 				}
 			   } // end of - read all data from the boards
 			} // choose read method
+		debug_maybe_log_summary("runloop_wait_first_send");
 		if(no_trigg>0) checkEntries(m_conn_evque); // detect no data sent by FERS board(s)
 
 
@@ -859,7 +1031,21 @@ void FERSProducer::RunLoop(){
 	                		}
 
 					//ev->Print(std::cout);
-					SendEvent(std::move(ev));
+						if (m_debug_startup && !debug_logged_first_send) {
+							debug_logged_first_send = true;
+							SetStatusTag("FERS_DBG_PHASE", "first_send");
+						EUDAQ_INFO("FERS startup debug first_send"
+							+ std::string(" wall_ms=") + std::to_string(DebugWallNowMs())
+							+ " elapsed_ms=" + std::to_string(DebugElapsedMs(m_debug_start_run_tp))
+							+ " trigger_id=" + std::to_string(trigger_n)
+								+ " complete_queue_depth=" + std::to_string(Nevt - ievt));
+						}
+						if (m_debug_trigger_print) {
+							EUDAQ_INFO("FERS trigger debug send"
+								+ std::string(" event_n=") + std::to_string(m_evt_c)
+								+ " trigger_n=" + std::to_string(trigger_n));
+						}
+						SendEvent(std::move(ev));
 
 					m_conn_ev.clear(); // clear single-event buffer
 

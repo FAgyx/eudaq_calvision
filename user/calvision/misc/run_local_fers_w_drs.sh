@@ -117,9 +117,12 @@ sleep 1
 sleep 1
 
 "$BIN_DIR/euCliProducer" -n DRSProducer -t my_drs0 &
+sleep 1
 
-echo "Calvision DRS-only components launched from $ROOT_DIR"
+"$BIN_DIR/euCliProducer" -n FERSProducer -t my_fers0 &
+
+echo "Calvision FERS+DRS components launched from $ROOT_DIR"
 echo "Using euLog binary=$LOG_BIN"
 echo "Using EUDAQ_MODULE_DIR=$EUDAQ_MODULE_DIR"
 echo "Using EUDAQ_MODULE_IGNORE_DEFALUT=$EUDAQ_MODULE_IGNORE_DEFALUT"
-echo "In euRun, load user/calvision/misc/drs_only.ini + user/calvision/misc/drs_only.conf"
+echo "In euRun, load user/calvision/misc/fers_w_drs.ini + user/calvision/misc/fers_w_drs.conf"
