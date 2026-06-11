@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BIN_DIR="$ROOT_DIR/bin"
 MODULE_DIR="$ROOT_DIR/modules_calvision"
-ROOT_HOME="/home/softwares/root"
+ROOT_HOME="${ROOT_HOME:-/home/softwares/root}"
+CAEN_LIB_DIR="${CAEN_LIB_DIR:-$HOME/local_install/lib}"
 LOG_BIN="$BIN_DIR/euLog"
 
 if [[ -x "$ROOT_DIR/build/gui/euLog" ]]; then
@@ -85,7 +86,7 @@ export EUDAQ_MODULE_DIR="$MODULE_DIR"
 export EUDAQ_MODULE_IGNORE_DEFALUT=1
 export ROOTSYS="$ROOT_HOME"
 export PATH="$ROOTSYS/bin${PATH:+:$PATH}"
-export LD_LIBRARY_PATH="$ROOTSYS/lib:$HOME/local_install/lib:$ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$ROOTSYS/lib:$CAEN_LIB_DIR:$ROOT_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 stop_existing
 
