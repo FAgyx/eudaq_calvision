@@ -23,6 +23,10 @@ include_directories(include)
 set(RUN_GUI_SRC
   src/euRun.cxx
   src/euRun.cc
+  src/CalvisionConfTab.cc
+  src/CalvisionDeviceTab.cc
+  src/CalvisionDrsTab.cc
+  src/CalvisionFersTab.cc
   src/RunControlModel.cc
   src/euRun.rc
   src/scanHelper.cc

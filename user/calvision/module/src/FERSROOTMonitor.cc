@@ -274,6 +274,9 @@ void FERSROOTMonitor::AtEventReception(eudaq::EventSP ev){
 
 					m_DRS_nEvt->AddBinContent(shmp->nevtDRS[brd],1);
 					if(data.size()>0) {
+						if (DRSis_compact_event(&data)) {
+							continue;
+						}
 	  					auto Event = DRSunpack_event_S(&data);
 
 						int hch = 0;

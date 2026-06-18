@@ -21,6 +21,11 @@
 
 
 //////////////////////////
+namespace {
+constexpr uint32_t kDrsCompactPayloadMagic = 0x44525343; // "DRSC"
+constexpr uint32_t kDrsCompactPayloadVersion = 1;
+constexpr size_t kDrsCompactHeaderBytes = 9 * sizeof(uint32_t);
+}
 
 void DRSpack_event(void* Event, std::vector<uint8_t> *vec)
 {
@@ -47,6 +52,40 @@ void DRSpack_event(void* Event, std::vector<uint8_t> *vec)
     }// end if group is present 
  }// end group loop
 
+}
+
+
+void DRSpack_compact_event(uint32_t event_size,
+                           uint32_t board_id,
+                           uint32_t pattern,
+                           uint32_t channel_mask,
+                           uint32_t event_counter,
+                           uint32_t trigger_time_tag,
+                           const uint8_t *payload,
+                           size_t payload_size,
+                           std::vector<uint8_t> *vec)
+{
+  FERSpack(32, kDrsCompactPayloadMagic, vec);
+  FERSpack(32, kDrsCompactPayloadVersion, vec);
+  FERSpack(32, event_size, vec);
+  FERSpack(32, board_id, vec);
+  FERSpack(32, pattern, vec);
+  FERSpack(32, channel_mask, vec);
+  FERSpack(32, event_counter, vec);
+  FERSpack(32, trigger_time_tag, vec);
+  FERSpack(32, static_cast<uint32_t>(payload_size), vec);
+  if (payload && payload_size > 0) {
+    vec->insert(vec->end(), payload, payload + payload_size);
+  }
+}
+
+
+bool DRSis_compact_event(const std::vector<uint8_t> *vec)
+{
+  if (!vec || vec->size() < kDrsCompactHeaderBytes) {
+    return false;
+  }
+  return FERSunpack32(0, *vec) == kDrsCompactPayloadMagic;
 }
 
 

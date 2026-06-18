@@ -22,6 +22,36 @@ namespace eudaq {
       Register<RunControl, const std::string&>(RunControl::m_id_factory);
     auto dummy1 = Factory<RunControl>::
       Register<RunControl, const std::string&>(eudaq::cstr2hash("RunControl"));
+
+    std::vector<std::string> SplitConnectionNames(const std::string &names) {
+      std::vector<std::string> result;
+      for (const auto &name : eudaq::split(names, ";, \t", true)) {
+        if (!name.empty()) {
+          result.push_back(name);
+        }
+      }
+      return result;
+    }
+
+    bool HasConnectionName(const std::vector<std::string> &names,
+                           const std::string &name) {
+      for (const auto &candidate : names) {
+        if (candidate == name) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    ConnectionSPC FindConnectionByName(const std::vector<ConnectionSPC> &connections,
+                                       const std::string &name) {
+      for (const auto &conn : connections) {
+        if (conn && conn->GetName() == name) {
+          return conn;
+        }
+      }
+      return nullptr;
+    }
   }
   
   RunControl::RunControl(const std::string &listenaddress)
@@ -253,24 +283,27 @@ namespace eudaq {
     std::string producer_last_start;
     m_conf->SetSection("RunControl");
     producer_last_start = m_conf->Get("EUDAQ_CTRL_PRODUCER_LAST_START", producer_last_start);
+    auto producers_last_start = SplitConnectionNames(producer_last_start);
     for(auto &conn :conn_to_run){
       if(conn->GetType() == "Producer" &&
-	 conn->GetName() != producer_last_start){
+	 !HasConnectionName(producers_last_start, conn->GetName())){
 	SendCommand("START", to_string(m_run_n), conn);
       }
     }
 
-    auto tp_timeout = std::chrono::steady_clock::now()
-      + std::chrono::seconds(60);
     for(auto &conn :conn_to_run){
-      if(conn->GetName() == producer_last_start){
+      if(HasConnectionName(producers_last_start, conn->GetName())){
 	continue;
       }
+      auto tp_timeout = std::chrono::steady_clock::now()
+	+ std::chrono::seconds(60);
       while(1){
-	auto st = GetConnectionStatus(conn)->GetState();
+	auto status = GetConnectionStatus(conn);
+	auto st = status ? status->GetState() : Status::STATE_UNINIT;
 	if(st == Status::STATE_CONF){
 	  if(std::chrono::steady_clock::now()>tp_timeout){
 	    EUDAQ_ERROR("Timesout waiting running status from "+ conn->GetName());
+	    break;
 	  }
 	  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	  continue;
@@ -281,10 +314,26 @@ namespace eudaq {
     }
     
     std::this_thread::sleep_for(std::chrono::seconds(1));
-    for(auto &conn :conn_to_run){
-      if(conn->GetType() == "Producer" &&
-	 conn->GetName() == producer_last_start){
-	SendCommand("START", to_string(m_run_n), conn);
+    for(const auto &producer_name : producers_last_start){
+      auto conn = FindConnectionByName(conn_to_run, producer_name);
+      if(!conn || conn->GetType() != "Producer"){
+	continue;
+      }
+      SendCommand("START", to_string(m_run_n), conn);
+      auto tp_timeout = std::chrono::steady_clock::now()
+	+ std::chrono::seconds(60);
+      while(1){
+	auto st = GetConnectionStatus(conn);
+	if(st && st->GetState() == Status::STATE_RUNNING)
+	  break;
+	if(st && st->GetState() != Status::STATE_CONF &&
+	   st->GetState() != Status::STATE_STOPPED)
+	  break;
+	if(std::chrono::steady_clock::now()>tp_timeout){
+	  EUDAQ_ERROR("Timesout waiting running status from "+ conn->GetName());
+	  break;
+	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
     }
   }
@@ -324,21 +373,23 @@ namespace eudaq {
     std::string producer_first_stop="";
     m_conf->SetSection("RunControl");
     producer_first_stop = m_conf->Get("EUDAQ_CTRL_PRODUCER_FIRST_STOP", producer_first_stop);
+    auto producers_first_stop = SplitConnectionNames(producer_first_stop);
 
-    auto tp_timeout = std::chrono::steady_clock::now()
-      + std::chrono::seconds(60);
-
-    for(auto &conn : conn_to_stop){
-      if (conn->GetType() == "Producer" &&
-	  conn->GetName() == producer_first_stop){
+    for(const auto &producer_name : producers_first_stop){
+      auto conn = FindConnectionByName(conn_to_stop, producer_name);
+      if (conn && conn->GetType() == "Producer"){
 	SendCommand("STOP", "", conn);
 
+	auto tp_timeout = std::chrono::steady_clock::now()
+	  + std::chrono::seconds(60);
 	while(1){
 	  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-	  auto st =  GetConnectionStatus(conn)->GetState();
+	  auto status = GetConnectionStatus(conn);
+	  auto st = status ? status->GetState() : Status::STATE_UNINIT;
 	  if (st == Status::STATE_RUNNING) {
 	    if(std::chrono::steady_clock::now() > tp_timeout){
 	      EUDAQ_ERROR("Timesout waiting stopping status from "+ conn->GetName());
+	      break;
 	    }
 	    continue;
 	  }else break;
@@ -349,19 +400,24 @@ namespace eudaq {
     
     for(auto &conn :conn_to_stop){
       if(conn->GetType() == "Producer" &&
-	 conn->GetName() != producer_first_stop){
+	 !HasConnectionName(producers_first_stop, conn->GetName())){
     	SendCommand("STOP", "", conn);
       }
     }
 
     for(auto &conn :conn_to_stop)
       if(conn->GetType() == "Producer" &&
-	 conn->GetName() != producer_first_stop){
+	 !HasConnectionName(producers_first_stop, conn->GetName())){
+	auto tp_timeout = std::chrono::steady_clock::now()
+	  + std::chrono::seconds(60);
         while(1){
-          auto st =  GetConnectionStatus(conn)->GetState();
+          auto status = GetConnectionStatus(conn);
+          auto st = status ? status->GetState() : Status::STATE_UNINIT;
           if (st != Status::STATE_RUNNING) break;
-          if(std::chrono::steady_clock::now() > tp_timeout) 
+          if(std::chrono::steady_clock::now() > tp_timeout){
             EUDAQ_ERROR("Timesout waiting stopping status from "+ conn->GetName());
+            break;
+          }
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
       }
@@ -416,6 +472,12 @@ namespace eudaq {
       m_cmdserver->SendPacket(packet, *id);
     else
       m_cmdserver->SendPacket(packet, ConnectionInfo::ALL);
+  }
+
+  void RunControl::SendUserCommand(const std::string &cmd,
+                                   const std::string &param,
+                                   ConnectionSPC id){
+    SendCommand(cmd, param, id);
   }
 
   void RunControl::CommandThread() {

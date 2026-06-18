@@ -15,6 +15,7 @@
 #include "TH2.h"
 #include "TMultiGraph.h"
 
+#include <cmath>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -304,8 +305,8 @@ namespace eudaq {
     if (m_canv_needs_refresh) { // book the pads and monitors placeholders
       canv->Clear();
       if (m_drawable.size() > 1) {
-        int ncol = ceil(sqrt(m_drawable.size()));
-        int nrow = ceil(m_drawable.size()*1./ncol);
+        int ncol = std::ceil(std::sqrt(m_drawable.size()));
+        int nrow = std::ceil(m_drawable.size()*1./ncol);
         canv->Divide(ncol, nrow);
       }
       for (size_t i = 0; i < m_drawable.size(); ++i) {

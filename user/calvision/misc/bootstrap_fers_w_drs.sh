@@ -22,7 +22,7 @@ Prepare a fresh clone to run user/calvision/misc/run_local_fers_w_drs.sh.
 
 Options:
   --install-system-deps  Install compiler, CMake, Qt5, libusb, and runtime tools.
-  --root PATH            ROOT installation prefix containing bin/thisroot.sh.
+  --root PATH            ROOT installation prefix containing bin/root-config.
   --caen-prefix PATH     CAEN SDK prefix containing include/ and lib/ or lib64/.
   --jobs N               Number of parallel build jobs.
   --clean                Remove the existing build directory before configuring.
@@ -100,7 +100,7 @@ resolve_root_home() {
   candidates+=("/home/softwares/root")
 
   for candidate in "${candidates[@]}"; do
-    if [[ -x "$candidate/bin/root-config" && -f "$candidate/bin/thisroot.sh" ]]; then
+    if [[ -x "$candidate/bin/root-config" ]]; then
       cd "$candidate"
       pwd
       return 0
@@ -112,10 +112,14 @@ resolve_root_home() {
 
 load_root_environment() {
   local root_home="$1"
-  set +u
-  # ROOT supplies this environment script as part of its installation.
-  source "$root_home/bin/thisroot.sh"
-  set -u
+  if [[ -f "$root_home/bin/thisroot.sh" ]]; then
+    set +u
+    # Source-built ROOT installations supply this environment script.
+    source "$root_home/bin/thisroot.sh"
+    set -u
+  else
+    export PATH="$root_home/bin${PATH:+:$PATH}"
+  fi
   export ROOTSYS="$root_home"
 }
 
@@ -237,7 +241,7 @@ verify_installation() {
 
   for path in "${runtime_paths[@]}"; do
     if [[ -f "$path" ]]; then
-      unresolved="$(LD_LIBRARY_PATH="$ROOT_HOME_FOUND/lib:$CAEN_RUNTIME_LIB_DIRS:$REPO_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      unresolved="$(LD_LIBRARY_PATH="$ROOT_LIB_DIR_FOUND:$CAEN_RUNTIME_LIB_DIRS:$REPO_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
         ldd "$path" | awk '/not found/{print}')"
       if [[ -n "$unresolved" ]]; then
         echo "Unresolved libraries for $path:" >&2
@@ -296,8 +300,8 @@ while (( $# > 0 )); do
 done
 
 if (( ROOT_HOME_EXPLICIT )); then
-  [[ -x "$ROOT_HOME_ARG/bin/root-config" && -f "$ROOT_HOME_ARG/bin/thisroot.sh" ]] ||
-    die "--root must point to a ROOT installation containing bin/root-config and bin/thisroot.sh."
+  [[ -x "$ROOT_HOME_ARG/bin/root-config" ]] ||
+    die "--root must point to a ROOT installation containing bin/root-config."
 fi
 
 if [[ -n "$CAEN_PREFIX" ]]; then
@@ -316,10 +320,12 @@ if [[ -z "$ROOT_HOME_FOUND" ]]; then
   die "ROOT was not found. Install ROOT with GUI support, then rerun with --root /path/to/root."
 fi
 load_root_environment "$ROOT_HOME_FOUND"
+ROOT_LIB_DIR_FOUND="$("$ROOT_HOME_FOUND/bin/root-config" --libdir)"
 
 resolve_caen_dependencies
 
 echo "ROOT:              $ROOT_HOME_FOUND"
+echo "ROOT libraries:    $ROOT_LIB_DIR_FOUND"
 echo "CAEN headers:      $CAEN_INCLUDE_DIR_FOUND"
 echo "CAEN Digitizer:    $CAEN_DIGI_LIBRARY_FOUND"
 echo "CAENComm:          $CAEN_COMM_LIBRARY_FOUND"
@@ -353,9 +359,16 @@ cmake_args=(
   "-DCAEN_VME_LIBRARY=$CAEN_VME_LIBRARY_FOUND"
 )
 
-if [[ -d "$ROOT_HOME_FOUND/cmake" ]]; then
-  cmake_args+=("-DROOT_DIR=$ROOT_HOME_FOUND/cmake")
-fi
+for root_cmake_dir in \
+  "$ROOT_HOME_FOUND/cmake" \
+  "$ROOT_HOME_FOUND/lib/cmake/ROOT" \
+  "$ROOT_HOME_FOUND/lib64/cmake/ROOT" \
+  "$ROOT_HOME_FOUND/share/root/cmake"; do
+  if [[ -f "$root_cmake_dir/ROOTConfig.cmake" ]]; then
+    cmake_args+=("-DROOT_DIR=$root_cmake_dir")
+    break
+  fi
+done
 
 cmake "${cmake_args[@]}"
 

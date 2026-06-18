@@ -78,6 +78,7 @@ float CLK_PERIOD[FERSLIB_MAX_NBRD];  				// clock period in ns (for reg settings
 
 static THREAD_LOCAL char lastError[1024];
 static int FERS_OpenOffline(char* path, int* handle);
+static void FERS_CleanupFailedOpen(int handle, int board_index);
 
 // *********************************************************************************************************
 // Messaging and errors
@@ -149,6 +150,52 @@ int FERS_GetLastError(char description[1024]) {
 	_getLastLocalError(description);
 	_resetLastLocalError();
 	return 0;
+}
+
+static void FERS_CleanupFailedOpen(int handle, int board_index) {
+	if ((board_index < 0) || (board_index >= FERSLIB_MAX_NBRD))
+		return;
+
+	if (BoardConnected[board_index] && !FERS_Offline) {
+		if (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_ETH) {
+			LLeth_CloseDevice(board_index);
+		} else if (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_USB) {
+			LLusb_CloseDevice(board_index);
+		} else if (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_TDL) {
+			int cnc_index = FERS_CNCINDEX(handle);
+			if ((cnc_index >= 0) && (cnc_index < FERSLIB_MAX_NCNC)) {
+				if (CncOpenHandles[cnc_index] > 0)
+					CncOpenHandles[cnc_index]--;
+				if (CncOpenHandles[cnc_index] == 0) {
+					LLtdl_CloseDevice(cnc_index);
+					CncConnected[cnc_index] = 0;
+					CncPath[cnc_index][0] = 0;
+					if (FERS_CncInfo[cnc_index] != NULL) {
+						free(FERS_CncInfo[cnc_index]);
+						FERS_CncInfo[cnc_index] = NULL;
+					}
+				}
+			}
+		}
+		if (NumBoardConnected > 0)
+			--NumBoardConnected;
+	}
+
+	if (FERS_BoardInfo[board_index] != NULL) {
+		free(FERS_BoardInfo[board_index]);
+		FERS_BoardInfo[board_index] = NULL;
+		FERS_TotalAllocatedMem -= sizeof(FERS_BoardInfo_t);
+	}
+	if (FERScfg[board_index] != NULL) {
+		free(FERScfg[board_index]);
+		FERScfg[board_index] = NULL;
+		FERS_TotalAllocatedMem -= sizeof(Config_t);
+	}
+	if (FERS_TotalAllocatedMem < 0)
+		FERS_TotalAllocatedMem = 0;
+
+	BoardConnected[board_index] = 0;
+	BoardPath[board_index][0] = 0;
 }
 
 // Get if Raw data filename is FERSlib like
@@ -582,8 +629,11 @@ int FERS_OpenDevice(char *path, int *handle)
 				sscanf(ss[1], "%d", &pid);
 				ret = LLusb_OpenDevice(pid, BoardIndex);
 				if (ret < 0) {
+					char tmpDesc[1024];
 					FERS_LibMsg("[ERROR][BRD %02d] Failed to open the USB device %d\n", BoardIndex, pid);
-					_setLastLocalError("Can't open the USB device");
+					_getLastLocalError(tmpDesc);
+					if (tmpDesc[0] == '\0')
+						_setLastLocalError("Can't open the USB device");
 					return FERSLIB_ERR_COMMUNICATION;
 				}
 				*handle = FERS_CONNECTIONTYPE_USB | BoardIndex;
@@ -612,8 +662,7 @@ int FERS_OpenDevice(char *path, int *handle)
 			char tmpDesc[1024];
 			sprintf(tmpDesc, "Can't access board %d registers", BoardIndex);
 			_setLastLocalError(tmpDesc);
-			free(FERS_BoardInfo[BoardIndex]);
-			FERS_BoardInfo[BoardIndex] = NULL;
+			FERS_CleanupFailedOpen(*handle, BoardIndex);
 			return FERSLIB_ERR_INVALID_FW;
 		}
 		if (fwrev == 0) {  // fwrev = 0 means that the board is responding but there is not a valid FW. 
@@ -621,8 +670,7 @@ int FERS_OpenDevice(char *path, int *handle)
 			char tmpDesc[1024];
 			sprintf(tmpDesc, "Board %d is not running a valid firmware", BoardIndex);
 			_setLastLocalError(tmpDesc);
-			free(FERS_BoardInfo[BoardIndex]);
-			FERS_BoardInfo[BoardIndex] = NULL;
+			FERS_CleanupFailedOpen(*handle, BoardIndex);
 			return FERSLIB_ERR_INVALID_FW;
 		}
 
@@ -645,8 +693,7 @@ int FERS_OpenDevice(char *path, int *handle)
 		if (ret != 0) {
 			if (ENABLE_FERSLIB_LOGMSG) FERS_LibMsg("[ERROR][BRD %02d] Can't read board info or invalid BIC\n", BoardIndex);
 			_setLastLocalError("Can't read board info or invalid BIC");
-			free(FERS_BoardInfo[BoardIndex]);
-			FERS_BoardInfo[BoardIndex] = NULL;
+			FERS_CleanupFailedOpen(*handle, BoardIndex);
 			return FERSLIB_ERR_INVALID_BIC;
 		}
 
@@ -906,32 +953,44 @@ int FERS_CloseDevice(int handle)
 			}
 		}
 	} else {
-		if ((handle < 0) || (FERS_INDEX(handle) >= FERSLIB_MAX_NBRD)) return FERSLIB_ERR_INVALID_HANDLE;
-		if (BoardConnected[FERS_INDEX(handle)]  && !FERS_Offline) {
+		int board_index = FERS_INDEX(handle);
+		int close_ret = 0;
+		if ((handle < 0) || (board_index >= FERSLIB_MAX_NBRD)) return FERSLIB_ERR_INVALID_HANDLE;
+		if (BoardConnected[board_index]  && !FERS_Offline) {
 			if (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_ETH) {
-				LLeth_CloseDevice(FERS_INDEX(handle));
+				close_ret = LLeth_CloseDevice(board_index);
 			} else if (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_USB) {
-				LLusb_CloseDevice(FERS_INDEX(handle));
+				close_ret = LLusb_CloseDevice(board_index);
 			} else if (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_TDL) {
 				CncOpenHandles[FERS_CNCINDEX(handle)]--;
 				if (CncOpenHandles[FERS_CNCINDEX(handle)] == 0)
-					LLtdl_CloseDevice(FERS_CNCINDEX(handle));
+					close_ret = LLtdl_CloseDevice(FERS_CNCINDEX(handle));
 			}
 		} else if (((FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_TDL) || (FERS_CONNECTIONTYPE(handle) == FERS_CONNECTIONTYPE_CNC)) && !FERS_Offline) {
-			CncOpenHandles[FERS_INDEX(handle)]--;
-			if (CncOpenHandles[FERS_INDEX(handle)] == 0)
-				LLtdl_CloseDevice(FERS_INDEX(handle));
+			CncOpenHandles[board_index]--;
+			if (CncOpenHandles[board_index] == 0)
+				close_ret = LLtdl_CloseDevice(board_index);
 		}
-		free(FERS_BoardInfo[FERS_INDEX(handle)]); // free the board info struct
-		FERS_BoardInfo[FERS_INDEX(handle)] = NULL;
-		FERS_TotalAllocatedMem -= sizeof(FERS_BoardInfo[FERS_INDEX(handle)]);
+		if (close_ret != 0)
+			return close_ret;
 
-		BoardConnected[FERS_INDEX(handle)] = 0;
-		--NumBoardConnected;
+		if (FERS_BoardInfo[board_index] != NULL) {
+			free(FERS_BoardInfo[board_index]); // free the board info struct
+			FERS_BoardInfo[board_index] = NULL;
+			FERS_TotalAllocatedMem -= sizeof(FERS_BoardInfo_t);
+		}
 
-		free(FERScfg[FERS_INDEX(handle)]);
-		FERScfg[FERS_INDEX(handle)] = NULL;
-		FERS_TotalAllocatedMem -= sizeof(FERScfg[FERS_INDEX(handle)]);
+		if (BoardConnected[board_index]) {
+			BoardConnected[board_index] = 0;
+			if (NumBoardConnected > 0)
+				--NumBoardConnected;
+		}
+
+		if (FERScfg[board_index] != NULL) {
+			free(FERScfg[board_index]);
+			FERScfg[board_index] = NULL;
+			FERS_TotalAllocatedMem -= sizeof(Config_t);
+		}
 	}
 	if (ENABLE_FERSLIB_LOGMSG) FERS_LibMsg("[INFO][BRD %02d] Device closed\n", FERS_INDEX(handle));
 	return 0;
@@ -2779,6 +2838,3 @@ int FERS_FirmwareUpgrade(int handle, char filen[200], void(*ptr)(char *msg, int 
 
 	return 0;
 }
-
-
-

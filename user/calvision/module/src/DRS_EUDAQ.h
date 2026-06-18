@@ -9,6 +9,8 @@
 #define _DRS_EUDAQ_h
 
 #include "CAENDigitizer.h"
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 //#include "paramparser.h"
 #include <map>
@@ -35,6 +37,16 @@ typedef struct
 void make_header(int board, int DataQualifier, std::vector<uint8_t> *data);
 // basic types of events
 void DRSpack_event(void* Event, std::vector<uint8_t> *vec);
+void DRSpack_compact_event(uint32_t event_size,
+                           uint32_t board_id,
+                           uint32_t pattern,
+                           uint32_t channel_mask,
+                           uint32_t event_counter,
+                           uint32_t trigger_time_tag,
+                           const uint8_t *payload,
+                           size_t payload_size,
+                           std::vector<uint8_t> *vec);
+bool DRSis_compact_event(const std::vector<uint8_t> *vec);
 CAEN_DGTZ_X742_EVENT_t* DRSunpack_event(std::vector<uint8_t> *vec);
 CAEN_DGTZ_X742_EVENT_S_t DRSunpack_event_S(std::vector<uint8_t> *vec);
 void FreeDRSEvent(CAEN_DGTZ_X742_EVENT_t *event);

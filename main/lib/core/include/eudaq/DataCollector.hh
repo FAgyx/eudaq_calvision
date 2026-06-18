@@ -48,6 +48,8 @@ namespace eudaq {
     static DataCollectorSP Make(const std::string &code_name,
 				const std::string &run_name,
 				const std::string &runcontrol);
+  protected:
+    virtual EventSPC GetMonitorEvent(EventSPC ev);
   private:
     void OnInitialise() override final;
     void OnConfigure() override final;

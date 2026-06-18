@@ -549,25 +549,35 @@ unsigned int USBDEV::occurency = 0;
 
 
 bool	USBDEV::CheckIfPresentAndGetUSBDevicePath(int InterfaceIndex, libusb_device_handle** dev_handle) {
-	libusb_device** devs; //pointer to pointer of device, used to retrieve a list of devices
+	libusb_device** devs = nullptr; //pointer to pointer of device, used to retrieve a list of devices
 	int r; //for return values
 	int i = 0, fersIdx = 0;
 	ssize_t cnt; //holding number of devices in list
 	if (ctx == nullptr) {
 		r = libusb_init(&ctx); //initialize a library session
 		if (r < 0) {
+			_setLastLocalError("libusb_init failed: %s", libusb_error_name(r));
 			return false;
 		}
 	}
 	cnt = libusb_get_device_list(ctx, &devs); //get the list of devices
 	if (cnt < 0) {
-		libusb_free_device_list(devs, 1); //free the list, unref the devices in it
-		libusb_exit(ctx); //close the session
+		if (devs != nullptr)
+			libusb_free_device_list(devs, 1); //free the list, unref the devices in it
+		if (occurency == 0) {
+			libusb_exit(ctx); //close the session
+			ctx = nullptr;
+		}
+		_setLastLocalError("libusb_get_device_list failed: %s", libusb_error_name((int)cnt));
 		return false;
 	}
 	if (InterfaceIndex >= cnt) {
 		libusb_free_device_list(devs, 1); //free the list, unref the devices in it
-		libusb_exit(ctx); //close the session
+		if (occurency == 0) {
+			libusb_exit(ctx); //close the session
+			ctx = nullptr;
+		}
+		_setLastLocalError("FERS USB index %d is outside the libusb device list length %zd", InterfaceIndex, cnt);
 		return false;
 	}
 	libusb_device_descriptor desc;
@@ -575,7 +585,11 @@ bool	USBDEV::CheckIfPresentAndGetUSBDevicePath(int InterfaceIndex, libusb_device
 		r = libusb_get_device_descriptor(devs[i], &desc);
 		if (r < 0) {
 			libusb_free_device_list(devs, 1); //free the list, unref the devices in it
-			libusb_exit(ctx); //close the session
+			if (occurency == 0) {
+				libusb_exit(ctx); //close the session
+				ctx = nullptr;
+			}
+			_setLastLocalError("libusb_get_device_descriptor failed: %s", libusb_error_name(r));
 			return false;
 		}
 		if ((desc.idVendor == 0x04D8) && (desc.idProduct == 0x53)) {
@@ -587,17 +601,23 @@ bool	USBDEV::CheckIfPresentAndGetUSBDevicePath(int InterfaceIndex, libusb_device
 			r = libusb_open((libusb_device*)(devs[i]), dev_handle);
 			if (r != 0) {
 				libusb_free_device_list(devs, 1); //free the list, unref the devices in it
-				if (InterfaceIndex == 0) libusb_exit(ctx); //close the session
+				if ((InterfaceIndex == 0) && (occurency == 0)) {
+					libusb_exit(ctx); //close the session
+					ctx = nullptr;
+				}
+				_setLastLocalError("libusb_open failed for FERS USB index %d: %s", InterfaceIndex, libusb_error_name(r));
 				return false;
 			}
 			if (libusb_kernel_driver_active(*dev_handle, 0) == 1) { //find out if kernel driver is attached
-				if (libusb_detach_kernel_driver(*dev_handle, 0) != 0) {
+				r = libusb_detach_kernel_driver(*dev_handle, 0);
+				if (r != 0) {
 					libusb_close(*dev_handle);
 					libusb_free_device_list(devs, 1); //free the list, unref the devices in it
-					if (InterfaceIndex == 0) {
+					if ((InterfaceIndex == 0) && (occurency == 0)) {
 						libusb_exit(ctx); //close the session
 						ctx = nullptr;
 					}
+					_setLastLocalError("libusb_detach_kernel_driver failed for FERS USB index %d: %s", InterfaceIndex, libusb_error_name(r));
 					return false;
 				}
 			}
@@ -605,12 +625,16 @@ bool	USBDEV::CheckIfPresentAndGetUSBDevicePath(int InterfaceIndex, libusb_device
 			if (r < 0) {
 				libusb_close(*dev_handle);
 				libusb_free_device_list(devs, 1); //free the list, unref the devices in it
-				if (InterfaceIndex == 0) {
+				if ((InterfaceIndex == 0) && (occurency == 0)) {
 					libusb_exit(ctx); //close the session
 					ctx = nullptr;
 				}
+				_setLastLocalError("libusb_claim_interface failed for FERS USB index %d: %s", InterfaceIndex, libusb_error_name(r));
 				return false;
 			}
+			libusb_clear_halt(*dev_handle, 0x01);
+			libusb_clear_halt(*dev_handle, 0x81);
+			libusb_clear_halt(*dev_handle, 0x82);
 			if (InterfaceIndex == fersIdx) {
 				occurency++;
 				libusb_free_device_list(devs, 1); //free the list, unref the devices in it
@@ -634,16 +658,30 @@ int USBDEV::USBSend(unsigned char* outBuffer, unsigned char* inBuffer, int outsi
 
 	r = libusb_bulk_transfer(dev_handle, 0x1, outBuffer, outsize, &actual, TIMEOUT);
 	if (!(r == 0 && actual == outsize)) {
+		libusb_clear_halt(dev_handle, 0x1);
+		actual = 0;
+		r = libusb_bulk_transfer(dev_handle, 0x1, outBuffer, outsize, &actual, TIMEOUT);
+	}
+	if (!(r == 0 && actual == outsize)) {
 		if (ENABLE_FERSLIB_LOGMSG) {
 			FERS_LibMsg((char*)"[ERROR] write pipe failed on USB\n");
 		}
+		_setLastLocalError("USB bulk write failed on endpoint 0x01: %s, actual=%d, expected=%d",
+			libusb_error_name(r), actual, outsize);
 		return FERSLIB_ERR_COMMUNICATION;
 	}
 	r = libusb_bulk_transfer(dev_handle, 0x81, inBuffer, insize, &actual, TIMEOUT);
 	if (!(r == 0 && actual == insize)) {
+		libusb_clear_halt(dev_handle, 0x81);
+		actual = 0;
+		r = libusb_bulk_transfer(dev_handle, 0x81, inBuffer, insize, &actual, TIMEOUT);
+	}
+	if (!(r == 0 && actual == insize)) {
 		if (ENABLE_FERSLIB_LOGMSG) {
 			FERS_LibMsg((char*)"[ERROR] read pipe failed on USB\n");
 		}
+		_setLastLocalError("USB bulk read failed on endpoint 0x81: %s, actual=%d, expected=%d",
+			libusb_error_name(r), actual, insize);
 		return FERSLIB_ERR_COMMUNICATION;
 	}
 	return 0;
@@ -655,9 +693,23 @@ USBDEV::USBDEV() {
 }
 
 int USBDEV::open_connection(int index) {
+	int ret = 0;
+	streaming_active = false;
+	leftover_data.clear();
 	if (USBDEV::CheckIfPresentAndGetUSBDevicePath(index, &dev_handle)) {	//Check and make sure at least one device with matching VID/PID is attached
 		IsOpen = true;
+		ret = stream_enable2(false);
+		streaming_active = false;
+		leftover_data.clear();
+		if (ret != 0) {
+			_setLastLocalError("USB stream disable failed during open for FERS USB index %d", index);
+			close_connection();
+			return FERSLIB_ERR_COMMUNICATION;
+		}
 	} else {	// Device must not be connected (or not programmed with correct firmware)
+		dev_handle = nullptr;
+		streaming_active = false;
+		leftover_data.clear();
 		if (ENABLE_FERSLIB_LOGMSG) {
 			FERS_LibMsg((char*)"[ERROR] Device not found on USB\n");
 		}
@@ -668,13 +720,19 @@ int USBDEV::open_connection(int index) {
 
 
 void USBDEV::close_connection() {
+	streaming_active = false;
+	leftover_data.clear();
 	if (IsOpen) {
-		occurency--;
+		if (occurency > 0) occurency--;
+		libusb_release_interface(dev_handle, 0);
 		libusb_close(dev_handle);
+		dev_handle = nullptr;
+		IsOpen = false;
 	}
-	if (occurency == 0)
+	if (occurency == 0) {
 		if (ctx != nullptr) libusb_exit(ctx); //close the session
-	ctx = nullptr;
+		ctx = nullptr;
+	}
 }
 
 
@@ -831,9 +889,16 @@ int USBDEV::stream_enable2(bool enable) {
 
 	r = libusb_bulk_transfer(dev_handle, 0x1, OUTBuffer, 2, &actual, TIMEOUT);
 	if (!(r == 0 && actual == 2)) {
+		libusb_clear_halt(dev_handle, 0x1);
+		actual = 0;
+		r = libusb_bulk_transfer(dev_handle, 0x1, OUTBuffer, 2, &actual, TIMEOUT);
+	}
+	if (!(r == 0 && actual == 2)) {
 		if (ENABLE_FERSLIB_LOGMSG) {
 			FERS_LibMsg((char*)"[ERROR] write pipe failed on USB\n");
 		}
+		_setLastLocalError("USB stream %s failed on endpoint 0x01: %s, actual=%d, expected=2",
+			enable ? "enable" : "disable", libusb_error_name(r), actual);
 		return FERSLIB_ERR_COMMUNICATION;
 	}
 	streaming_active = enable;
@@ -854,9 +919,16 @@ int USBDEV::stream_enable(bool enable) {
 
 	r = libusb_bulk_transfer(dev_handle, 0x1, OUTBuffer, 2, &actual, TIMEOUT);
 	if (!(r == 0 && actual == 2)) {
+		libusb_clear_halt(dev_handle, 0x1);
+		actual = 0;
+		r = libusb_bulk_transfer(dev_handle, 0x1, OUTBuffer, 2, &actual, TIMEOUT);
+	}
+	if (!(r == 0 && actual == 2)) {
 		if (ENABLE_FERSLIB_LOGMSG) {
 			FERS_LibMsg((char*)"[ERROR] write pipe failed on USB\n");
 		}
+		_setLastLocalError("USB stream %s failed on endpoint 0x01: %s, actual=%d, expected=2",
+			enable ? "enable" : "disable", libusb_error_name(r), actual);
 		return FERSLIB_ERR_COMMUNICATION;
 	}
 	streaming_active = enable;
@@ -876,7 +948,7 @@ int USBDEV::read_pipe(char* buff, int size, int* nb) {
 	}
 
 	int r;
-	int actual;
+	int actual = 0;
 
 	*nb = 0;
 	if (size == 0) return 0;
@@ -1248,6 +1320,7 @@ static void* usb_data_receiver(void* params) {
 	unlock(RxMutex[bindex]);
 	f_sem_destroy(&FERS_StartRunSemaphore[bindex]);
 	if (Dump[bindex] != NULL) fclose(Dump[bindex]);
+	RxStatus[bindex] = RXSTATUS_OFF;
 	return NULL;
 }
 
@@ -1449,40 +1522,49 @@ int LLusb_CloseRawOutputFile(int handle) {
 // --------------------------------------------------------------------------------------------------------- 
 int LLusb_OpenDevice(int PID, int bindex) {
 	int ret, started, i;
-	f_thread_t threadID;
-	static int OpenAllDevices = 1, Ndev = 0;
 
 	USBDEV FERS_usb_temp;
 
 	if (PID >= 10000) { // search for the board with the given PID between all the connected boards
-		uint32_t d32;
-		// 1st call => open all USB devices
-		if (OpenAllDevices) {
-			for (i = 0; i < FERSLIB_MAX_NBRD; i++) { // If you use FERScfg[brd]->NumBrd ?
-				ret = FERS_usb[i].open_connection(i);
-				if (ret != 0) break;
-			}
-			Ndev = i;
-			OpenAllDevices = 0;
-		}
+		uint32_t d32 = 0;
+		int TargetDevice = -1;
+		int LastTriedDevice = 0;
 
-		// DNIN: here at least!
-		for (i = 0; i < Ndev; i++) {
-			if (!FERS_usb[i].IsOpen)
-				return FERSLIB_ERR_COMMUNICATION;  // no further connected board is found
+		// Probe one USB device at a time. A wedged FERS endpoint can disturb
+		// later PID reads if its handle is kept open while scanning.
+		for (i = 0; i < FERSLIB_MAX_NBRD; i++) {
+			bool WasOpen = FERS_usb[i].IsOpen;
+			if (!WasOpen) {
+				ret = FERS_usb[i].open_connection(i);
+				if (ret != 0) {
+					if (LastTriedDevice > 0)
+						break;
+					continue;
+				}
+			}
+			LastTriedDevice = i + 1;
 			ret = FERS_usb[i].read_reg(a_pid, &d32);
 			if (ret != 0) {
 				FERS_LibMsg((char*)"[ERROR][BRD %02d] read PID failed\n", i);
-				return FERSLIB_ERR_COMMUNICATION;  // no further connected board is found
+				_setLastLocalError("USB read PID failed while looking for FERS PID %d at USB index %d", PID, i);
+				if (!WasOpen && FERS_usb[i].IsOpen)
+					FERS_usb[i].close_connection();
+				continue;
 			}
-			if (d32 == (uint32_t)PID) break;
+			if (d32 == (uint32_t)PID) {
+				TargetDevice = i;
+				break;
+			}
+			if (!WasOpen && FERS_usb[i].IsOpen)
+				FERS_usb[i].close_connection();
 		}
-		if (i == Ndev) {
-			FERS_LibMsg((char*)"[ERROR][BRD %02d] No board found with PID %d\n", i, PID);
+		if (TargetDevice < 0) {
+			FERS_LibMsg((char*)"[ERROR][BRD %02d] No board found with PID %d\n", LastTriedDevice, PID);
+			_setLastLocalError("No board found with FERS PID %d after scanning %d USB index(es)", PID, LastTriedDevice);
 			return FERSLIB_ERR_COMMUNICATION;  // no board found with the given PID
 		}
 		// Swap indexes (i = board with wanted PID, bindex = wanted board index) 
-		usbIdx[bindex] = i;
+		usbIdx[bindex] = TargetDevice;
 		//memcpy(&FERS_usb_temp, &FERS_usb[bindex], sizeof(USBDEV));
 		//memcpy(&FERS_usb[bindex], &FERS_usb[i], sizeof(USBDEV));
 		//memcpy(&FERS_usb[i], &FERS_usb_temp, sizeof(USBDEV));
@@ -1507,7 +1589,8 @@ int LLusb_OpenDevice(int PID, int bindex) {
 
 	QuitThread[bindex] = 0;
 	//FERS_usb[bindex].stream_enable(true);
-	thread_create(usb_data_receiver, &bindex, &threadID);
+	RxStatus[bindex] = RXSTATUS_OFF;
+	thread_create(usb_data_receiver, &bindex, &ThreadID[bindex]);
 	started = 0;
 	while (!started) {
 		f_sem_wait(&RxSemaphore[bindex], INFINITE);
@@ -1531,9 +1614,15 @@ int LLusb_CloseDevice(int bindex) {
 	lock(RxMutex[bindex]);
 	QuitThread[bindex] = 1;
 	unlock(RxMutex[bindex]);
-	for (int i = 0; i < 100; i++) {
+	for (int i = 0; i < 2500; i++) {
 		if (RxStatus[bindex] == RXSTATUS_OFF) break;
 		Sleep(1);
+	}
+	if (RxStatus[bindex] == RXSTATUS_OFF) {
+		thread_join(ThreadID[bindex], NULL);
+	} else {
+		FERS_LibMsg((char*)"[WARNING][BRD %02d] USB receiver thread did not stop; leaving buffers allocated\n", bindex);
+		return FERSLIB_ERR_COMMUNICATION;
 	}
 
 	FERS_usb[usbIdx[bindex]].stream_enable(false);
@@ -1568,4 +1657,3 @@ int LLusb_StreamEnable(int bindex, bool Enable) {
 int LLusb_Reset_IPaddress(int bindex) {
 	return(FERS_usb[usbIdx[bindex]].set_service_reg(1, 0));
 }
-

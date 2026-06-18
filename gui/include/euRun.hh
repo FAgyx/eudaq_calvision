@@ -12,9 +12,14 @@
 #include <QTimer>
 #include <QInputDialog>
 #include <QSettings>
-#include <QRegExp>
 #include <QString>
 #include <QGridLayout>
+
+class CalvisionDeviceTab;
+class CalvisionConfTab;
+class CalvisionDrsTab;
+class CalvisionFersTab;
+class QTabWidget;
 
 
 class RunControlGUI : public QMainWindow,
@@ -38,12 +43,12 @@ private slots:
   void on_btnInit_clicked();
   void on_btnConfig_clicked();
   void on_btnStart_clicked();
+  void on_btnSetRunNumber_clicked();
+  void on_txtNextRunNumber_returnPressed();
   void on_btnStop_clicked();
   void on_btnReset_clicked();
   void on_btnTerminate_clicked();
   void on_btnLog_clicked();
-  void on_btnLoadInit_clicked();
-  void on_btnLoadConf_clicked();
   void on_btnLoadDataPath_clicked();
   void onCustomContextMenu(const QPoint &point);
 
@@ -61,6 +66,7 @@ private:
   bool addToGrid(const QString &objectName, QString displayedName="");
   bool addAdditionalStatus(std::string info);
   bool checkFile(QString file, QString usecase);
+  bool applyManualRunNumber(bool warn_if_empty);
 
   bool readScanConfig();
   bool allConnectionsInState(eudaq::Status::State state);
@@ -72,6 +78,10 @@ private:
   void ensureDirectoryExists(const QString &path) const;
   void applyOutputPathToInitConfig();
   void applyOutputPathToRunConfig();
+  void applyDrsPayloadModeToRunConfig();
+  void setupDevicesTab();
+  void requestFersHvMonitorUpdate();
+  void requestFersHvSwitch(int board, bool on);
   void refreshConfiguredOutputTargets();
   void saveConfigurationSnapshot(const QString &path,
                                  eudaq::ConfigurationSPC conf) const;
@@ -94,6 +104,11 @@ private:
   QTimer m_scanningTimer;
   std::shared_ptr<eudaq::Configuration> m_scan_config;
   Scan m_scan;
+  QTabWidget *m_main_tabs;
+  CalvisionConfTab *m_conf_tab;
+  CalvisionDeviceTab *m_device_tab;
+  CalvisionDrsTab *m_drs_tab;
+  CalvisionFersTab *m_fers_tab;
 
   void updateProgressBar();
 };

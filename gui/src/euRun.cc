@@ -1,8 +1,17 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QLabel>
+#include <QTabWidget>
 #include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <vector>
 #include "euRun.hh"
+#include "CalvisionConfTab.hh"
+#include "CalvisionDeviceTab.hh"
+#include "CalvisionDrsTab.hh"
+#include "CalvisionFersTab.hh"
 #include "Colours.hh"
 #include "eudaq/FileNamer.hh"
 #include "eudaq/Config.hh"
@@ -16,19 +25,73 @@ QString patternFileName(const std::string &pattern, const QString &fallback) {
   QString filename = info.fileName();
   return filename.isEmpty() ? fallback : filename;
 }
+
+struct StatusGridTag {
+  const char *tag;
+  const char *label;
+};
+
+constexpr int kStatusPairsPerRow = 3;
+
+const std::vector<StatusGridTag> kBuilderStatusTags = {
+    {"_SERVER", "dc_SERVER"},
+    {"FastBuilder", "Builder Enabled"},
+    {"FastBuilderN", "Builders"},
+    {"FastCompleteN", "Built Events"},
+    {"FastIncompleteN", "Incomplete Events"},
+    {"FastDuplicateN", "Duplicate Fragments"},
+    {"FastQueueDepth", "Builder Queue"},
+    {"FastQueueFullN", "Queue Full"},
+    {"FastWriterQueueMB", "Writer Queue MB"},
+    {"FastWriterQueueFullN", "Writer Queue Full"},
+    {"FastEnqueueAvgUs", "Enqueue Avg us"},
+    {"FastEnqueueMaxUs", "Enqueue Max us"},
+    {"FastSerializeAvgUs", "Serialize Avg us"},
+    {"FastSerializeMaxUs", "Serialize Max us"},
+    {"FastWriteAvgUs", "Write Avg us"},
+    {"FastWriteMaxUs", "Write Max us"},
+    {"FastFileMB", "Output MB"},
+    {"FastRouteDropN", "Route Drops"}
+};
 }
 
 RunControlGUI::RunControlGUI()
-  : QMainWindow(0, 0),
+  : QMainWindow(nullptr),
     m_display_col(0),
     m_scan_active(false),
     m_scan_interrupt_received(false),
     m_save_config_at_run_start(true),
-    m_display_row(0){
+    m_display_row(0),
+    m_main_tabs(nullptr),
+    m_conf_tab(nullptr),
+    m_device_tab(nullptr),
+    m_drs_tab(nullptr),
+    m_fers_tab(nullptr){
     m_map_label_str = {{"RUN", "Run Number"}};
     qRegisterMetaType<QModelIndex>("QModelIndex");
     setupUi(this);
+    setupDevicesTab();
 
+    lblInit->hide();
+    txtInitFileName->hide();
+    btnLoadInit->hide();
+    lblConfig->hide();
+    txtConfigFileName->hide();
+    btnLoadConf->hide();
+    txtInitFileName->clear();
+    txtConfigFileName->clear();
+    if (auto grid = qobject_cast<QGridLayout*>(grpControl->layout())) {
+      grid->removeWidget(lblInit);
+      grid->removeWidget(txtInitFileName);
+      grid->removeWidget(btnLoadInit);
+      grid->removeWidget(lblConfig);
+      grid->removeWidget(txtConfigFileName);
+      grid->removeWidget(btnLoadConf);
+      grid->removeWidget(btnInit);
+      grid->removeWidget(btnConfig);
+      grid->addWidget(btnInit, 0, 3);
+      grid->addWidget(btnConfig, 0, 4);
+    }
 
   lblCurrent->setText(m_map_state_str.at(eudaq::Status::STATE_UNINIT));
   for(auto &label_str: m_map_label_str) {
@@ -40,7 +103,7 @@ RunControlGUI::RunControlGUI()
     grpGrid->addWidget(lblname, m_display_row, m_display_col * 2);
     grpGrid->addWidget(lblvalue, m_display_row, m_display_col * 2 + 1);
     m_str_label[label_str.first] = lblvalue;
-    if (++m_display_col > 1){
+    if (++m_display_col >= kStatusPairsPerRow){
       ++m_display_row;
       m_display_col = 0;
     }
@@ -61,15 +124,20 @@ RunControlGUI::RunControlGUI()
   m_lastexit_success = settings.value("successexit", 1).toUInt();
   geom_from_last_program_run.setSize(settings.value("size", geom.size()).toSize());
   geom_from_last_program_run.moveTo(settings.value("pos", geom.topLeft()).toPoint());
-  //TODO: check last if last file exits. if not, use defalt value.
-  txtConfigFileName
-    ->setText(settings.value("lastConfigFile", "config file not set").toString());
-  txtInitFileName
-    ->setText(settings.value("lastInitFile", "init file not set").toString());
   txtScanFile
     ->setText(settings.value("lastScanFile", "scan file not set").toString());
   txtDataPath
     ->setText(settings.value("lastDataPath", QDir::currentPath()).toString());
+  comboDrsPayloadMode->clear();
+  comboDrsPayloadMode->addItem("Decoded DRS", "decoded");
+  comboDrsPayloadMode->addItem("Compact DRS", "compact");
+  QString drs_payload_mode =
+      settings.value("drsPayloadMode", "decoded").toString().toLower();
+  int drs_payload_index = comboDrsPayloadMode->findData(drs_payload_mode);
+  if (drs_payload_index < 0) {
+    drs_payload_index = 0;
+  }
+  comboDrsPayloadMode->setCurrentIndex(drs_payload_index);
 
   settings.endGroup();
 
@@ -93,9 +161,7 @@ RunControlGUI::RunControlGUI()
   connect(&m_scanningTimer,SIGNAL(timeout()), this, SLOT(nextStep()));
   m_timer_display.start(1000); // internal update time of GUI
   btnInit->setEnabled(1);
-  btnConfig->setEnabled(1);
-  btnLoadInit->setEnabled(1);
-  btnLoadConf->setEnabled(1);
+  btnConfig->setEnabled(0);
   btnStart->setEnabled(1);
   btnStop->setEnabled(1);
   btnReset->setEnabled(1);
@@ -118,7 +184,129 @@ void RunControlGUI::SetInstance(eudaq::RunControlUP rc){
   thd_rc.detach();
 }
 
+void RunControlGUI::setupDevicesTab() {
+  QWidget *run_control_page = takeCentralWidget();
+  m_main_tabs = new QTabWidget(this);
+  setCentralWidget(m_main_tabs);
+  if (run_control_page) {
+    m_main_tabs->addTab(run_control_page, "Run Control");
+  }
+  m_device_tab = new CalvisionDeviceTab(m_main_tabs);
+  m_main_tabs->addTab(m_device_tab, "Devices");
+  m_fers_tab = new CalvisionFersTab(m_main_tabs);
+  m_fers_tab->setHvMonitorUpdateCallback([this]() {
+    requestFersHvMonitorUpdate();
+  });
+  m_fers_tab->setHvSwitchCallback([this](int board, bool on) {
+    requestFersHvSwitch(board, on);
+  });
+  m_main_tabs->addTab(m_fers_tab, "FERS");
+  m_drs_tab = new CalvisionDrsTab(m_main_tabs);
+  m_main_tabs->addTab(m_drs_tab, "DRS");
+  m_conf_tab = new CalvisionConfTab(m_main_tabs);
+  m_main_tabs->addTab(m_conf_tab, "Conf");
+}
+
+void RunControlGUI::requestFersHvMonitorUpdate() {
+  if (!m_rc) {
+    return;
+  }
+
+  const auto map_conn_status = m_rc->GetActiveConnectionStatusMap();
+  int requested = 0;
+  for (const auto &conn_status : map_conn_status) {
+    if (!conn_status.first || !conn_status.second ||
+        conn_status.first->GetType() != "Producer") {
+      continue;
+    }
+    const QString producer =
+        QString::fromStdString(conn_status.first->GetName());
+    if (!producer.startsWith("my_fers")) {
+      continue;
+    }
+    if (conn_status.second->GetState() == eudaq::Status::STATE_RUNNING) {
+      continue;
+    }
+    m_rc->SendUserCommand("FERS_UPDATE_HV_MONITOR", "", conn_status.first);
+    ++requested;
+  }
+
+  if (requested == 0) {
+    EUDAQ_WARN("No stopped/configured FERS producer available for HV monitor update");
+  } else {
+    EUDAQ_INFO("Requested FERS HV monitor update from "
+               + std::to_string(requested) + " producer(s)");
+  }
+}
+
+void RunControlGUI::requestFersHvSwitch(int board, bool on) {
+  if (!m_rc) {
+    return;
+  }
+
+  const QString target = QString("my_fers%1").arg(board);
+  const auto map_conn_status = m_rc->GetActiveConnectionStatusMap();
+  bool found = false;
+  bool requested = false;
+  for (const auto &conn_status : map_conn_status) {
+    if (!conn_status.first || !conn_status.second ||
+        conn_status.first->GetType() != "Producer") {
+      continue;
+    }
+    const QString producer =
+        QString::fromStdString(conn_status.first->GetName());
+    if (producer != target) {
+      continue;
+    }
+    found = true;
+    if (conn_status.second->GetState() == eudaq::Status::STATE_RUNNING) {
+      EUDAQ_WARN("Ignoring FERS HV switch request while DAQ is running: "
+                 + producer.toStdString());
+      break;
+    }
+    const std::string param = std::string("0 ") + (on ? "1" : "0");
+    m_rc->SendUserCommand("FERS_SET_HV_ONOFF", param, conn_status.first);
+    requested = true;
+    break;
+  }
+
+  if (!found) {
+    EUDAQ_WARN("No FERS producer found for HV switch request: "
+               + target.toStdString());
+  } else if (requested) {
+    EUDAQ_INFO("Requested " + target.toStdString() + " HV "
+               + std::string(on ? "ON" : "OFF"));
+  }
+}
+
 void RunControlGUI::on_btnInit_clicked(){
+  QString fers_config_path;
+  if (m_fers_tab) {
+    if (!m_fers_tab->saveConfig()) {
+      return;
+    }
+    fers_config_path = m_fers_tab->configPath();
+  }
+  QString drs_config_path;
+  if (m_drs_tab) {
+    if (!m_drs_tab->saveConfig()) {
+      return;
+    }
+    drs_config_path = m_drs_tab->configPath();
+  }
+  QString conf_template_path;
+  if (m_conf_tab) {
+    if (!m_conf_tab->saveTemplate()) {
+      return;
+    }
+    conf_template_path = m_conf_tab->templatePath();
+    txtConfigFileName->setText(conf_template_path);
+  }
+  if(m_device_tab &&
+     !m_device_tab->prepareForInit(m_rc.get(), txtInitFileName, txtConfigFileName,
+                                   conf_template_path, fers_config_path,
+                                   drs_config_path))
+    return;
   std::string settings = txtInitFileName->text().toStdString();
   if(!checkFile(QString::fromStdString(settings),QString::fromStdString("init file")))
       return;
@@ -150,6 +338,11 @@ void RunControlGUI::on_btnTerminate_clicked(){
 
 void RunControlGUI::on_btnConfig_clicked(){
   std::string settings = txtConfigFileName->text().toStdString();
+  if(txtConfigFileName->text().trimmed().isEmpty()){
+    QMessageBox::warning(this, "Config",
+                         "Run Init first to generate the runtime config file.");
+    return;
+  }
   if(!checkFile(QString::fromStdString(settings),QString::fromStdString("Config file")))
    {
      EUDAQ_ERROR(settings+" cannot be read");
@@ -157,6 +350,7 @@ void RunControlGUI::on_btnConfig_clicked(){
   }
   if(m_rc){
     m_rc->ReadConfigureFile(settings);
+    applyDrsPayloadModeToRunConfig();
     applyOutputPathToRunConfig();
     m_rc->Configure();
   }
@@ -170,16 +364,42 @@ void RunControlGUI::on_btnConfig_clicked(){
   }
 }
 
-void RunControlGUI::on_btnStart_clicked(){
-  QString qs_next_run = txtNextRunNumber->text();
-  if(!qs_next_run.isEmpty()){
-    bool succ;
-    uint32_t run_n = qs_next_run.toInt(&succ);
-    if(succ){
-      m_rc->SetRunN(run_n);
-    }
-    txtNextRunNumber->clear();
+bool RunControlGUI::applyManualRunNumber(bool warn_if_empty){
+  QString qs_next_run = txtNextRunNumber->text().trimmed();
+  if(qs_next_run.isEmpty()){
+    if(warn_if_empty)
+      QMessageBox::information(this, "Run number", "Enter a run number first.");
+    return !warn_if_empty;
   }
+
+  bool succ = false;
+  uint32_t run_n = qs_next_run.toUInt(&succ);
+  if(!succ){
+    QMessageBox::warning(this, "Invalid run number",
+                         "Run number must be a non-negative integer.");
+    return false;
+  }
+
+  if(m_rc)
+    m_rc->SetRunN(run_n);
+  m_run_n_qsettings = run_n;
+
+  QSettings settings("EUDAQ collaboration", "EUDAQ");
+  settings.beginGroup("euRun2");
+  settings.setValue("runnumber", m_run_n_qsettings);
+  settings.endGroup();
+
+  txtNextRunNumber->clear();
+  if(m_str_label.count("RUN"))
+    m_str_label.at("RUN")->setText(QString::number(run_n) + " (next run)");
+  EUDAQ_INFO("RunControl GUI manually set next run number to "
+             + std::to_string(run_n));
+  return true;
+}
+
+void RunControlGUI::on_btnStart_clicked(){
+  if(!applyManualRunNumber(false))
+    return;
   applyOutputPathToInitConfig();
   applyOutputPathToRunConfig();
   refreshConfiguredOutputTargets();
@@ -187,6 +407,14 @@ void RunControlGUI::on_btnStart_clicked(){
     store_config();
   if(m_rc)
     m_rc->StartRun();
+}
+
+void RunControlGUI::on_btnSetRunNumber_clicked(){
+  applyManualRunNumber(true);
+}
+
+void RunControlGUI::on_txtNextRunNumber_returnPressed(){
+  applyManualRunNumber(true);
 }
 
 void RunControlGUI::on_btnStop_clicked() {
@@ -203,29 +431,6 @@ void RunControlGUI::on_btnReset_clicked() {
 void RunControlGUI::on_btnLog_clicked() {
     std::string msg = txtLogmsg->text().toStdString();
     EUDAQ_USER(msg);
-}
-
-void RunControlGUI::on_btnLoadInit_clicked() {
-  QString usedpath =QFileInfo(txtInitFileName->text()).path();
-  QString filename =QFileDialog::getOpenFileName(this, tr("Open File"),
-                         usedpath,
-                         tr("*.ini (*.ini)"));
-  if (!filename.isNull()){
-    txtInitFileName->setText(filename);
-  }
-}
-
-void RunControlGUI::on_btnLoadConf_clicked() {
-  QString usedpath =QFileInfo(txtConfigFileName->text()).path();
-  QString filename =QFileDialog::getOpenFileName(this, tr("Open File"),
-                         usedpath,
-                         tr("*.conf (*.conf)"));
-  if (!filename.isNull()) {
-    txtConfigFileName->setText(filename);
-  }
-
-
-
 }
 
 void RunControlGUI::on_btnLoadDataPath_clicked() {
@@ -270,6 +475,9 @@ eudaq::Status::State RunControlGUI::updateInfos(){
         if(! (conn_status.first->GetType()== "LogCollector"))
             addStatusDisplay(conn_status);
       }
+      if(conn_status.first && conn_status.first->GetType() == "DataCollector"){
+        addStatusDisplay(conn_status);
+      }
     }
     if(map_conn_status.empty()){
       state = eudaq::Status::STATE_UNINIT;
@@ -285,18 +493,82 @@ eudaq::Status::State RunControlGUI::updateInfos(){
       }
     }
 
-    QRegExp rx_init(".+(\\.ini$)");
-    QRegExp rx_conf(".+(\\.conf$)");
-    bool confLoaded = rx_conf.exactMatch(txtConfigFileName->text());
-    bool initLoaded = rx_init.exactMatch(txtInitFileName->text());
+    bool have_fers_producer = false;
+    if (m_device_tab) {
+      QMap<QString, CalvisionDeviceTab::FersReadback> fers_readbacks;
+      std::map<int, CalvisionFersTab::HvReadback> fers_hv_readbacks;
+      for (auto &conn_status : map_conn_status) {
+        if (!conn_status.first || !conn_status.second ||
+            conn_status.first->GetType() != "Producer") {
+          continue;
+        }
+        const QString producer =
+            QString::fromStdString(conn_status.first->GetName());
+        if (!producer.startsWith("my_fers")) {
+          continue;
+        }
+        have_fers_producer = true;
+        bool producer_index_ok = false;
+        const int producer_index =
+            producer.mid(QString("my_fers").size()).toInt(&producer_index_ok);
 
-    btnInit->setEnabled(state == eudaq::Status::STATE_UNINIT && initLoaded);
+        const auto tags = conn_status.second->GetTags();
+        auto get_tag = [&tags](const std::string &key) -> QString {
+          const auto it = tags.find(key);
+          return it == tags.end() ? QString() : QString::fromStdString(it->second);
+        };
+
+        CalvisionDeviceTab::FersReadback readback;
+        readback.pid = get_tag("FERS_BRD0_PID");
+        readback.model = get_tag("FERS_BRD0_MODEL");
+        readback.fpga_fw = get_tag("FERS_BRD0_FPGA_FW_REV");
+        readback.uc_fw = get_tag("FERS_BRD0_UC_FW_REV");
+        readback.summary = get_tag("FERS_INFO");
+        if (!readback.pid.isEmpty() || !readback.model.isEmpty() ||
+            !readback.fpga_fw.isEmpty() || !readback.uc_fw.isEmpty() ||
+            !readback.summary.isEmpty()) {
+          fers_readbacks.insert(producer, readback);
+        }
+        if (producer_index_ok && producer_index >= 0) {
+          CalvisionFersTab::HvReadback hv;
+          hv.hv_set = get_tag("FERS_BRD0_HV_SET_V");
+          hv.vmon = get_tag("FERS_BRD0_HV_VMON");
+          hv.imon = get_tag("FERS_BRD0_HV_IMON");
+          hv.det_temp = get_tag("FERS_BRD0_TEMP_DET");
+          hv.fpga_temp = get_tag("FERS_BRD0_TEMP_FPGA");
+          hv.board_temp = get_tag("FERS_BRD0_TEMP_BRD");
+          hv.status = get_tag("FERS_BRD0_HV_STATUS");
+          if (!hv.hv_set.isEmpty() || !hv.vmon.isEmpty() ||
+              !hv.imon.isEmpty() || !hv.det_temp.isEmpty() ||
+              !hv.fpga_temp.isEmpty() || !hv.board_temp.isEmpty() ||
+              !hv.status.isEmpty()) {
+            fers_hv_readbacks[producer_index] = hv;
+          }
+        }
+      }
+      m_device_tab->updateFersReadbacks(fers_readbacks);
+      if (m_fers_tab) {
+        m_fers_tab->updateHvReadbacks(fers_hv_readbacks);
+      }
+    }
+    if (m_fers_tab) {
+      m_fers_tab->setHvMonitorUpdateEnabled(
+          have_fers_producer && state != eudaq::Status::STATE_RUNNING);
+      m_fers_tab->setHvControlsEnabled(
+          have_fers_producer && state != eudaq::Status::STATE_RUNNING);
+    }
+
+    const bool confLoaded = QFileInfo(txtConfigFileName->text()).exists() &&
+                            txtConfigFileName->text().endsWith(".conf");
+
+    btnInit->setEnabled(state == eudaq::Status::STATE_UNINIT);
     btnConfig->setEnabled((state == eudaq::Status::STATE_UNCONF ||
                state == eudaq::Status::STATE_CONF ||
                state == eudaq::Status::STATE_STOPPED)&& confLoaded);
-    btnLoadInit->setEnabled(state != eudaq::Status::STATE_RUNNING || state != eudaq::Status::STATE_STOPPED);
-    btnLoadConf->setEnabled(state != eudaq::Status::STATE_RUNNING || state != eudaq::Status::STATE_STOPPED);
+    comboDrsPayloadMode->setEnabled(state != eudaq::Status::STATE_RUNNING);
     btnStart->setEnabled(state == eudaq::Status::STATE_CONF || state == eudaq::Status::STATE_STOPPED);
+    btnSetRunNumber->setEnabled(state != eudaq::Status::STATE_RUNNING);
+    txtNextRunNumber->setEnabled(state != eudaq::Status::STATE_RUNNING);
     btnStop->setEnabled(state == eudaq::Status::STATE_RUNNING && !m_scan_active);
     btnReset->setEnabled(state != eudaq::Status::STATE_RUNNING);
     btnTerminate->setEnabled(state != eudaq::Status::STATE_RUNNING);
@@ -329,6 +601,11 @@ void RunControlGUI::closeEvent(QCloseEvent *event) {
       == QMessageBox::Cancel){
     event->ignore();
   } else {
+    m_timer_display.stop();
+    m_scanningTimer.stop();
+    m_scan_active = false;
+    m_scan_interrupt_received = true;
+
     QSettings settings("EUDAQ collaboration", "EUDAQ");
     settings.beginGroup("euRun2");
     if(m_rc)
@@ -337,14 +614,25 @@ void RunControlGUI::closeEvent(QCloseEvent *event) {
       settings.setValue("runnumber", m_run_n_qsettings);
     settings.setValue("size", size());
     settings.setValue("pos", pos());
-    settings.setValue("lastConfigFile", txtConfigFileName->text());
-    settings.setValue("lastInitFile", txtInitFileName->text());
     settings.setValue("lastScanFile", txtScanFile->text());
     settings.setValue("lastDataPath", txtDataPath->text());
+    settings.setValue("drsPayloadMode", comboDrsPayloadMode->currentData().toString());
     settings.setValue("successexit", 1);
     settings.endGroup();
+    if (m_device_tab) {
+      m_device_tab->saveSettings();
+    }
+    if (m_conf_tab) {
+      m_conf_tab->saveSettings();
+    }
+    if (m_fers_tab) {
+      m_fers_tab->saveSettings();
+    }
     if(m_rc)
       m_rc->Terminate();
+    if (m_device_tab) {
+      m_device_tab->terminateOwnedProcesses();
+    }
     event->accept();
   }
 }
@@ -448,29 +736,43 @@ bool RunControlGUI::loadConfigFile() {
 }
 
 bool RunControlGUI::addStatusDisplay(std::pair<eudaq::ConnectionSPC, eudaq::StatusSPC> connection) {
-    QString name = QString::fromStdString(connection.first->GetName()
-                                         +":"+connection.first->GetType());
-    QString displayName = QString::fromStdString(connection.first->GetName()
-                                         +":EventN");
-    addToGrid(displayName,name);
+    if(!connection.first)
+      return false;
+    if(connection.first->GetType() == "DataCollector") {
+      const QString connection_name =
+          QString::fromStdString(connection.first->GetName());
+      for(const auto &tag: kBuilderStatusTags) {
+        addToGrid(connection_name + ":" + tag.tag, tag.label);
+      }
+    }
     return true;
 }
 
 bool RunControlGUI::removeStatusDisplay(std::pair<eudaq::ConnectionSPC, eudaq::StatusSPC> connection) {
-    // remove obsolete information from disconnected Connections
-    for(auto idx=0; idx<grpGrid->count();idx++) {
-        QLabel * l = dynamic_cast<QLabel *> (grpGrid->itemAt(idx)->widget());
-        if(l->objectName()==QString::fromStdString(connection.first->GetName()
-                                                   +":"+connection.first->GetType())) {
-            // Status updates are always pairs
-            m_map_label_str.erase(l->objectName());
-            m_str_label.erase(l->objectName());
-            grpGrid->removeWidget(l);
-            delete l;
-            l = dynamic_cast<QLabel *> (grpGrid->itemAt(idx)->widget());
-            grpGrid->removeWidget(l);
-            delete l;
+    if(!connection.first)
+      return false;
+    const QString prefix =
+        QString::fromStdString(connection.first->GetName()) + ":";
+    QStringList object_names;
+    for(const auto &label: m_str_label) {
+      if(label.first.startsWith(prefix)) {
+        object_names << label.first;
+      }
+    }
+
+    for(const QString &object_name: object_names) {
+      const QString value_name = "val_" + object_name;
+      for(int idx = grpGrid->count() - 1; idx >= 0; --idx) {
+        QLayoutItem *item = grpGrid->itemAt(idx);
+        QLabel *label = item ? dynamic_cast<QLabel *>(item->widget()) : nullptr;
+        if(label && (label->objectName() == object_name ||
+                     label->objectName() == value_name)) {
+          grpGrid->removeWidget(label);
+          delete label;
         }
+      }
+      m_map_label_str.erase(object_name);
+      m_str_label.erase(object_name);
     }
     return true;
 }
@@ -487,13 +789,13 @@ bool RunControlGUI::addToGrid(const QString & objectName, QString displayedName)
     lblname->setText(displayedName+": ");
     QLabel *lblvalue = new QLabel(grpStatus);
     lblvalue->setObjectName("val_"+objectName);
-    lblvalue->setText("val_"+objectName);
+    lblvalue->setText("--");
 
     int colPos = 0, rowPos = 0;
     if( 2* (m_str_label.size()+1) < grpGrid->rowCount() * grpGrid->columnCount() ) {
         colPos = m_display_col;
         rowPos = m_display_row;
-        if (++m_display_col > 1) {
+        if (++m_display_col >= kStatusPairsPerRow) {
             ++m_display_row;
             m_display_col = 0;
         }
@@ -501,7 +803,7 @@ bool RunControlGUI::addToGrid(const QString & objectName, QString displayedName)
     else {
         colPos = m_display_col;
         rowPos = m_display_row;
-        if (++m_display_col > 1){
+        if (++m_display_col >= kStatusPairsPerRow){
             ++m_display_row;
             m_display_col = 0;
         }
@@ -517,24 +819,38 @@ bool RunControlGUI::addToGrid(const QString & objectName, QString displayedName)
  * @return true if success, false otherwise (cannot happen currently)
  */
 bool RunControlGUI::updateStatusDisplay() {
-    auto it = m_map_conn_status_last.begin();
-    while(it!=m_map_conn_status_last.end()) {
+    auto map_conn_status = m_map_conn_status_last;
+    if(m_rc)
+      map_conn_status = m_rc->GetActiveConnectionStatusMap();
+
+    auto it = map_conn_status.begin();
+    while(it!=map_conn_status.end()) {
         // elements might not be existing at startup/beeing asynchronously changed
         if(it->first && it->second) {
             auto labelit = m_str_label.begin();
             while(labelit!=m_str_label.end()) {
-                std::string labelname     = (labelit->first.toStdString()).substr(0,labelit->first.toStdString().find(":"));
-                std::string displayedItem = (labelit->first.toStdString()).substr(labelit->first.toStdString().find(":")+1,labelit->first.toStdString().size());
-                if(it->first->GetName()==labelname) {
+                const std::string label_key = labelit->first.toStdString();
+                const size_t sep = label_key.find(":");
+                if(sep == std::string::npos){
+                    ++labelit;
+                    continue;
+                }
+                std::string labelname = label_key.substr(0, sep);
+                std::string displayedItem = label_key.substr(sep + 1);
+                const std::string conn_name = it->first->GetName();
+                const std::string conn_full_name =
+                    it->first->GetType() + "." + it->first->GetName();
+                if(conn_name==labelname || conn_full_name==labelname) {
                     auto tags = it->second->GetTags();
-                    // obviously not really elegant...
-                    for(auto &tag: tags){
-                        if(tag.first==displayedItem && displayedItem=="EventN")
-                            labelit->second->setText(QString::fromStdString(tag.second+" Events"));
-                        else if(tag.first==displayedItem && displayedItem=="Freq. (avg.) [kHz]")
-                            labelit->second->setText(QString::fromStdString(tag.second+" kHz"));
-                        else if(tag.first==displayedItem)
-                            labelit->second->setText(QString::fromStdString(tag.second));
+                    const auto tag = tags.find(displayedItem);
+                    if(tag == tags.end()){
+                        labelit->second->setText("--");
+                    }else if(displayedItem=="EventN"){
+                        labelit->second->setText(QString::fromStdString(tag->second+" Events"));
+                    }else if(displayedItem=="Freq. (avg.) [kHz]"){
+                        labelit->second->setText(QString::fromStdString(tag->second+" kHz"));
+                    }else{
+                        labelit->second->setText(QString::fromStdString(tag->second));
                     }
                 }
                 labelit++;
@@ -913,6 +1229,50 @@ void RunControlGUI::applyOutputPathToRunConfig() {
   if (!cur_section.isEmpty()) {
     conf->SetSection(cur_section.toStdString());
   }
+}
+
+void RunControlGUI::applyDrsPayloadModeToRunConfig() {
+  if (!m_rc) {
+    return;
+  }
+  auto conf = std::const_pointer_cast<eudaq::Configuration>(m_rc->GetConfiguration());
+  if (!conf) {
+    return;
+  }
+
+  QString mode = comboDrsPayloadMode->currentData().toString().toLower();
+  if (mode.isEmpty()) {
+    mode = "decoded";
+  }
+
+  const QString cur_section = QString::fromStdString(conf->GetCurrentSectionName());
+  auto active_connections = m_rc->GetActiveConnections();
+  for (const auto &conn : active_connections) {
+    if (!conn || conn->GetType() != "Producer") {
+      continue;
+    }
+    std::string name = conn->GetName();
+    std::string lower_name = name;
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (lower_name.find("drs") == std::string::npos) {
+      continue;
+    }
+    const std::string section = conn->GetType() + "." + name;
+    if (!conf->HasSection(section)) {
+      continue;
+    }
+    conf->SetSection(section);
+    conf->SetString("DRS_PAYLOAD_MODE", mode.toStdString());
+  }
+  if (!cur_section.isEmpty()) {
+    conf->SetSection(cur_section.toStdString());
+  }
+
+  QSettings settings("EUDAQ collaboration", "EUDAQ");
+  settings.beginGroup("euRun2");
+  settings.setValue("drsPayloadMode", mode);
+  settings.endGroup();
 }
 
 void RunControlGUI::refreshConfiguredOutputTargets() {

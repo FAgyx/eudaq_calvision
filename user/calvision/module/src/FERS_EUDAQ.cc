@@ -622,6 +622,7 @@ void initshm( int shmid )
 		shmp->HVbias[igr][i]=0;
         	shmp->tempFPGA[igr][i]=0;
 	        shmp->tempDet[igr][i]=0;
+		shmp->tempBoard[igr][i]=0;
         	shmp->hv_Vmon[igr][i]=0;
 	        shmp->hv_Imon[igr][i]=0;
         	shmp->hv_status_on[igr][i]=0;

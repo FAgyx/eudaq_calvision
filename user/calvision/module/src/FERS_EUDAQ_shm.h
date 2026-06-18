@@ -48,6 +48,7 @@ struct shmseg {
         std::chrono::high_resolution_clock::time_point FERS_LastSrvEvent_us[MAX_NGR][MAX_NBRD];
 	float tempFPGA[MAX_NGR][MAX_NBRD];
 	float tempDet[MAX_NGR][MAX_NBRD];
+	float tempBoard[MAX_NGR][MAX_NBRD];
         float hv_Vmon[MAX_NGR][MAX_NBRD];
 	float hv_Imon[MAX_NGR][MAX_NBRD];
 	uint8_t hv_status_on[MAX_NGR][MAX_NBRD];

@@ -124,6 +124,9 @@ bool DRSProducerEvent2TTreeEventConverter::Converting( eudaq::EventSPC d1, eudaq
         PID[brd] = iPID;
 
         std::vector<uint8_t> data(block.begin() + index, block.end());
+        if (DRSis_compact_event(&data)) {
+            continue;
+        }
         unpacked_event[brd] = DRSunpack_event_S(&data);
         auto &evt = unpacked_event[brd];
 

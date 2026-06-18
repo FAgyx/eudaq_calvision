@@ -51,6 +51,10 @@ namespace eudaq {
   void DataCollector::DoReceive(ConnectionSPC id, EventSP ev){
   }
 
+  EventSPC DataCollector::GetMonitorEvent(EventSPC ev){
+    return ev;
+  }
+
   void DataCollector::SetServerAddress(const std::string &addr){
     m_data_addr = addr;
   }
@@ -207,9 +211,12 @@ namespace eudaq {
       if(m_evt_c%m_fraction != 0 && m_evt_c!=1){
 	return;
       }
+      auto monitor_ev = GetMonitorEvent(ev);
+      if(!monitor_ev)
+	return;
       for(auto &e: senders){
 	if(e.second)
-	  e.second->SendEvent(ev);
+	  e.second->SendEvent(monitor_ev);
 	else
 	  EUDAQ_THROW("DataCollector::WriterEvent, using a null pointer of DataSender");
       }

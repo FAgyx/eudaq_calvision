@@ -21,14 +21,18 @@
 #include <ratio>
 #include <chrono>
 #include <thread>
+#include <atomic>
 //#include <random>
 #include "stdlib.h"
 #ifndef _WIN32
 #include <sys/file.h>
 #endif
+#include <iomanip>
 #include <set>
 #include <array>
+#include <sstream>
 #include <limits>
+#include <cctype>
 #include "FERS_EUDAQ.h"
 #include <sys/time.h>
 
@@ -54,6 +58,20 @@ int shmid;
 namespace {
 constexpr int kDebugUnknownQualifier = std::numeric_limits<int>::lowest();
 
+struct ScopedAtomicFlag {
+	explicit ScopedAtomicFlag(std::atomic<bool> &flag) : m_flag(flag) {
+		m_flag.store(true, std::memory_order_release);
+	}
+	~ScopedAtomicFlag() {
+		m_flag.store(false, std::memory_order_release);
+	}
+	std::atomic<bool> &m_flag;
+};
+
+bool IsValidSharedMemory(const shmseg *ptr) {
+	return ptr != nullptr && ptr != reinterpret_cast<const shmseg *>(-1);
+}
+
 long long DebugWallNowMs() {
 	return std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::system_clock::now().time_since_epoch()).count();
@@ -71,11 +89,85 @@ std::string DebugQualifierToString(int data_qualifier) {
 	return std::to_string(data_qualifier);
 }
 
+bool IsFersSpectData(int data_qualifier) {
+	const int data_type = data_qualifier & 0xF;
+	return data_type == DTQ_SPECT || data_type == DTQ_TSPECT;
+}
+
+bool IsFersServiceData(int data_qualifier) {
+	return data_qualifier == DTQ_SERVICE;
+}
+
+std::string FormatFloat(float value, int precision = 3) {
+	std::ostringstream ss;
+	ss << std::fixed << std::setprecision(precision) << value;
+	return ss.str();
+}
+
+bool ParseOnOffToken(std::string token, bool *on) {
+	for (char &ch : token) {
+		ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+	}
+	if (token == "1" || token == "ON" || token == "TRUE" || token == "ENABLE") {
+		if (on) {
+			*on = true;
+		}
+		return true;
+	}
+	if (token == "0" || token == "OFF" || token == "FALSE" || token == "DISABLE") {
+		if (on) {
+			*on = false;
+		}
+		return true;
+	}
+	return false;
+}
+
 std::string DebugTriggerToString(bool have_trigger, uint64_t trigger_id) {
 	if (!have_trigger) {
 		return "NA";
 	}
 	return std::to_string(trigger_id);
+}
+
+std::string FersLastErrorString() {
+	char description[1024] = {};
+	FERS_GetLastError(description);
+	std::string detail(description);
+	while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r')) {
+		detail.pop_back();
+	}
+	return detail.empty() ? "no FERSlib detail" : detail;
+}
+
+std::string FersErrorString(const std::string &operation, int ret) {
+	return operation + " failed, ret = " + std::to_string(ret)
+		+ ", FERSlib detail: " + FersLastErrorString();
+}
+
+std::string BoundedCString(const char *value, size_t max_size) {
+	size_t len = 0;
+	while (len < max_size && value[len] != '\0') {
+		len++;
+	}
+	return std::string(value, len);
+}
+
+std::string FormatHex32(uint32_t value, int width = 8) {
+	std::ostringstream ss;
+	ss << std::uppercase << std::hex << std::setw(width) << std::setfill('0') << value;
+	return ss.str();
+}
+
+std::string FormatFersFpgaFw(uint32_t fw_rev) {
+	if (fw_rev == 0) {
+		return "BootLoader";
+	}
+	std::ostringstream ss;
+	ss << ((fw_rev >> 8) & 0xFF)
+		<< "." << (fw_rev & 0xFF)
+		<< " (Build = " << FormatHex32((fw_rev >> 16) & 0xFFFF, 4) << ")";
+	return ss.str();
 }
 }
 
@@ -92,6 +184,7 @@ class FERSProducer : public eudaq::Producer {
 		void DoStopRun() override;
 		void DoTerminate() override;
 		void DoReset() override;
+		void OnUnrecognised(const std::string &cmd, const std::string &param) override;
 		void RunLoop() override;
 		void checkEntries(const std::map<int, std::deque<SpectEvent_t>>& m_conn_evque);
 		size_t splitStringToIntArray(const std::string& input, char delimiter, int* result, size_t maxSize);
@@ -102,23 +195,36 @@ class FERSProducer : public eudaq::Producer {
 		static const uint32_t m_id_factory = eudaq::cstr2hash("FERSProducer");
 
 	private:
+		void PublishBoardReadback(const std::string &path, int board_index, int board_handle);
+		void UpdateServiceReadback(int board_index, const ServEvent_t &event);
+		void PublishHvMonitorStatus(bool force);
+		bool RefreshHvMonitorFromHardware(const std::string &reason);
+		bool SetHvOnOff(int board, bool on, const std::string &reason);
+		void ReleaseLock();
+		bool WaitForRunLoopBodyExit(const std::string &phase, std::chrono::milliseconds timeout);
+		void CleanupFersResources(const std::string &phase, bool detach_shared_memory);
+
 		bool m_flag_ts;
 		bool m_flag_tg;
 		uint32_t m_plane_id;
 		FILE* m_file_lock;
 		std::chrono::milliseconds m_ms_busy;
 		std::chrono::microseconds m_us_evt_length; // fake event length used in sync
-		bool m_exit_of_run;
+		std::atomic<bool> m_exit_of_run;
+		std::atomic<bool> m_run_loop_active;
 		int no_trigg = -1;
 		int sw_trigger = 0;
-			int spill_detect = 0;
-			int read_boards = 0;
-			int disable_ped = 0;
-			bool m_debug_startup = false;
-			bool m_debug_trigger_print = false;
-			std::array<uint32_t, FERSLIB_MAX_NBRD> m_t1_out_mask{};
+		int spill_detect = 0;
+		int read_boards = 0;
+		int disable_ped = 0;
+		bool m_debug_startup = false;
+		bool m_debug_trigger_print = false;
+		bool m_disable_t1_on_stop = false;
+		std::string m_fers_readback_summary;
+		std::array<uint32_t, FERSLIB_MAX_NBRD> m_t1_out_mask{};
 		std::array<int, FERSLIB_MAX_NBRD> m_start_run_mode{};
 		std::chrono::steady_clock::time_point m_debug_start_run_tp{};
+		std::chrono::steady_clock::time_point m_last_hv_status_publish{};
 
 		std::string c_ip;
 	        int cnc=0;
@@ -159,8 +265,123 @@ namespace{
 //----------DOC-MARK-----END*REG-----DOC-MARK----------
 
 FERSProducer::FERSProducer(const std::string & name, const std::string & runcontrol)
-	:eudaq::Producer(name, runcontrol), m_file_lock(0), m_exit_of_run(false)
+	:eudaq::Producer(name, runcontrol), m_file_lock(0), m_exit_of_run(false), m_run_loop_active(false)
 {  
+}
+
+void FERSProducer::ReleaseLock() {
+	if (!m_file_lock) {
+		return;
+	}
+#ifndef _WIN32
+	flock(fileno(m_file_lock), LOCK_UN);
+#endif
+	fclose(m_file_lock);
+	m_file_lock = 0;
+}
+
+bool FERSProducer::WaitForRunLoopBodyExit(const std::string &phase, std::chrono::milliseconds timeout) {
+	if (!m_run_loop_active.load(std::memory_order_acquire)) {
+		return true;
+	}
+
+	EUDAQ_INFO("FERS: " + phase + " waiting for readout loop to leave FERS calls before hardware cleanup");
+	const auto deadline = std::chrono::steady_clock::now() + timeout;
+	while (m_run_loop_active.load(std::memory_order_acquire) &&
+	       std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	if (m_run_loop_active.load(std::memory_order_acquire)) {
+		EUDAQ_WARN("FERS: " + phase + " readout loop did not exit within "
+			+ std::to_string(timeout.count())
+			+ " ms; continuing cleanup as best effort");
+		return false;
+	}
+
+	EUDAQ_INFO("FERS: " + phase + " readout loop exited before hardware cleanup");
+	return true;
+}
+
+void FERSProducer::CleanupFersResources(const std::string &phase, bool detach_shared_memory) {
+	m_exit_of_run.store(true, std::memory_order_release);
+	WaitForRunLoopBodyExit(phase, std::chrono::seconds(5));
+	m_ms_busy = std::chrono::milliseconds();
+	m_conn_evque.clear();
+	m_conn_ev.clear();
+
+	if (IsValidSharedMemory(shmp)) {
+		int nboards = shmp->connectedboards[fers_group];
+		if (nboards < 0) {
+			nboards = 0;
+		}
+		if (nboards > FERSLIB_MAX_NBRD) {
+			nboards = FERSLIB_MAX_NBRD;
+		}
+
+		if (nboards > 0) {
+			int start_mode = m_start_run_mode[0];
+			int ret = FERS_StopAcquisition(
+				shmp->handle[fers_group],
+				nboards,
+				start_mode,
+				GetRunNumber());
+			if (ret != 0) {
+				EUDAQ_WARN("FERS: " + phase + " FERS_StopAcquisition failed, ret = "
+					+ std::to_string(ret) + ", FERSlib detail: " + FersLastErrorString());
+			}
+		}
+
+		for (int brd = 0; brd < nboards; brd++) {
+			const int board_handle = shmp->handle[fers_group][brd];
+			if (board_handle < 0) {
+				continue;
+			}
+			int ret = FERS_FlushData(board_handle);
+			if (ret != 0) {
+				EUDAQ_WARN("FERS: " + phase + " FERS_FlushData failed on board "
+					+ std::to_string(brd) + ", ret = " + std::to_string(ret)
+					+ ", FERSlib detail: " + FersLastErrorString());
+			}
+		}
+
+		for (int brd = 0; brd < nboards; brd++) {
+			const int board_handle = shmp->handle[fers_group][brd];
+			if (board_handle < 0) {
+				continue;
+			}
+			int ret = FERS_CloseReadout(board_handle);
+			if (ret != 0) {
+				EUDAQ_WARN("FERS: " + phase + " FERS_CloseReadout failed on board "
+					+ std::to_string(brd) + ", ret = " + std::to_string(ret)
+					+ ", FERSlib detail: " + FersLastErrorString());
+			}
+			ret = FERS_HV_Set_OnOff(board_handle, 0);
+			if (ret != 0) {
+				EUDAQ_WARN("FERS: " + phase + " FERS_HV_Set_OnOff(0) failed on board "
+					+ std::to_string(brd) + ", ret = " + std::to_string(ret)
+					+ ", FERSlib detail: " + FersLastErrorString());
+			}
+			ret = FERS_CloseDevice(board_handle);
+			if (ret != 0) {
+				EUDAQ_WARN("FERS: " + phase + " FERS_CloseDevice failed on board "
+					+ std::to_string(brd) + ", ret = " + std::to_string(ret)
+					+ ", FERSlib detail: " + FersLastErrorString());
+			}
+			shmp->handle[fers_group][brd] = -1;
+		}
+		shmp->connectedboards[fers_group] = 0;
+
+		if (detach_shared_memory) {
+			if (shmdt(shmp) == -1) {
+				perror("shmdt");
+			}
+			shmp = nullptr;
+		}
+	}
+
+	ReleaseLock();
+	EUDAQ_INFO("FERS: " + phase + " cleanup complete");
 }
 
 void FERSProducer::DebugStartupCheckpoint(const std::string &phase) {
@@ -180,13 +401,271 @@ void FERSProducer::DebugStartupSetLastDQ(int data_qualifier) {
 	SetStatusTag("FERS_DBG_LAST_DQ", DebugQualifierToString(data_qualifier));
 }
 
+void FERSProducer::PublishBoardReadback(const std::string &path,
+		int board_index,
+		int board_handle) {
+	FERS_BoardInfo_t info = {};
+	int ret = FERS_GetBoardInfo(board_handle, &info);
+
+	uint32_t pid = FERS_pid(board_handle);
+	char *model_ptr = FERS_ModelName(board_handle);
+	std::string model = model_ptr ? std::string(model_ptr) : "";
+	uint32_t fpga_fw = FERS_FPGA_FWrev(board_handle);
+	uint32_t uc_fw = FERS_uC_FWrev(board_handle);
+
+	if (ret == 0) {
+		pid = info.pid;
+		model = BoundedCString(info.ModelName, sizeof(info.ModelName));
+		fpga_fw = info.FPGA_FWrev;
+		uc_fw = info.uC_FWrev;
+	} else {
+		EUDAQ_WARN("FERS_GetBoardInfo failed for board "
+			+ std::to_string(board_index)
+			+ " at " + path
+			+ ", ret = " + std::to_string(ret)
+			+ ", using cached accessor values");
+	}
+
+	if (model.empty() && ret == 0) {
+		model = BoundedCString(info.ModelCode, sizeof(info.ModelCode));
+	}
+	if (model.empty()) {
+		model = "unknown";
+	}
+
+	const std::string fpga_fw_text = FormatFersFpgaFw(fpga_fw);
+	const std::string uc_fw_text = FormatHex32(uc_fw);
+	const std::string board_prefix = "FERS_BRD" + std::to_string(board_index) + "_";
+
+	SetStatusTag(board_prefix + "PID", std::to_string(pid));
+	SetStatusTag(board_prefix + "MODEL", model);
+	SetStatusTag(board_prefix + "FPGA_FW_REV", fpga_fw_text);
+	SetStatusTag(board_prefix + "UC_FW_REV", uc_fw_text);
+
+	const std::string summary = "B" + std::to_string(board_index)
+		+ " PID=" + std::to_string(pid)
+		+ " Model=" + model
+		+ " FPGA=" + fpga_fw_text
+		+ " uC=" + uc_fw_text;
+	if (!m_fers_readback_summary.empty()) {
+		m_fers_readback_summary += "; ";
+	}
+	m_fers_readback_summary += summary;
+	SetStatusTag("FERS_INFO", m_fers_readback_summary);
+
+	EUDAQ_INFO("FERS readback " + path
+		+ ": PID=" + std::to_string(pid)
+		+ ", Brd Model=" + model
+		+ ", FPGA FW Rev=" + fpga_fw_text
+		+ ", uC FW Rev=" + uc_fw_text);
+}
+
+void FERSProducer::UpdateServiceReadback(int board_index,
+		const ServEvent_t &event) {
+	if (!IsValidSharedMemory(shmp) ||
+			board_index < 0 ||
+			board_index >= shmp->connectedboards[fers_group]) {
+		return;
+	}
+
+	shmp->tempFPGA[fers_group][board_index] = event.tempFPGA;
+	shmp->tempDet[fers_group][board_index] = event.tempDetector;
+	shmp->tempBoard[fers_group][board_index] = event.tempBoard;
+	shmp->hv_Vmon[fers_group][board_index] = event.hv_Vmon;
+	shmp->hv_Imon[fers_group][board_index] = event.hv_Imon;
+	shmp->hv_status_on[fers_group][board_index] = event.hv_status_on;
+	shmp->FERS_LastSrvEvent_us[fers_group][board_index] =
+		std::chrono::high_resolution_clock::now();
+}
+
+void FERSProducer::PublishHvMonitorStatus(bool force) {
+	if (!IsValidSharedMemory(shmp)) {
+		return;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (!force &&
+			now - m_last_hv_status_publish < std::chrono::milliseconds(1000)) {
+		return;
+	}
+	m_last_hv_status_publish = now;
+
+	float total_imon = 0.0f;
+	for (int board = 0; board < shmp->connectedboards[fers_group]; ++board) {
+		total_imon += shmp->hv_Imon[fers_group][board];
+		const std::string prefix =
+			"FERS_BRD" + std::to_string(board) + "_";
+		SetStatusTag(prefix + "HV_SET_V",
+			FormatFloat(shmp->HVbias[fers_group][board]));
+		SetStatusTag(prefix + "HV_VMON",
+			FormatFloat(shmp->hv_Vmon[fers_group][board]));
+		SetStatusTag(prefix + "HV_IMON",
+			FormatFloat(shmp->hv_Imon[fers_group][board]));
+		SetStatusTag(prefix + "TEMP_DET",
+			FormatFloat(shmp->tempDet[fers_group][board], 2));
+		SetStatusTag(prefix + "TEMP_FPGA",
+			FormatFloat(shmp->tempFPGA[fers_group][board], 2));
+		SetStatusTag(prefix + "TEMP_BRD",
+			FormatFloat(shmp->tempBoard[fers_group][board], 2));
+		SetStatusTag(prefix + "HV_STATUS",
+			shmp->hv_status_on[fers_group][board] ? "ON" : "OFF");
+	}
+	SetStatusTag("FERS_HV_TOTAL_IMON", FormatFloat(total_imon));
+}
+
+bool FERSProducer::RefreshHvMonitorFromHardware(const std::string &reason) {
+	if (IsStatus(eudaq::Status::STATE_RUNNING)) {
+		SetStatusTag("FERS_HV_MONITOR_UPDATE", "ignored: running");
+		EUDAQ_WARN("FERS HV monitor update ignored while running");
+		return false;
+	}
+	if (!IsValidSharedMemory(shmp) || shmp->connectedboards[fers_group] <= 0) {
+		SetStatusTag("FERS_HV_MONITOR_UPDATE", "ignored: no boards");
+		EUDAQ_WARN("FERS HV monitor update ignored: no connected boards");
+		return false;
+	}
+
+	int failures = 0;
+	for (int board = 0; board < shmp->connectedboards[fers_group]; ++board) {
+		const int board_handle = shmp->handle[fers_group][board];
+		if (board_handle < 0) {
+			++failures;
+			continue;
+		}
+
+		float hv_vmon = 0.0f;
+		float hv_imon = 0.0f;
+		float temp_detector = 0.0f;
+		float temp_fpga = 0.0f;
+		float temp_board = 0.0f;
+		int hv_on = 0;
+		int hv_ramping = 0;
+		int hv_ovc = 0;
+		int hv_ovv = 0;
+
+		int ret = 0;
+		ret |= FERS_HV_Get_Vmon(board_handle, &hv_vmon);
+		ret |= FERS_HV_Get_Imon(board_handle, &hv_imon);
+		ret |= FERS_HV_Get_DetectorTemp(board_handle, &temp_detector);
+		ret |= FERS_Get_FPGA_Temp(board_handle, &temp_fpga);
+		ret |= FERS_Get_Board_Temp(board_handle, &temp_board);
+		ret |= FERS_HV_Get_Status(board_handle, &hv_on, &hv_ramping,
+			&hv_ovc, &hv_ovv);
+		if (ret != 0) {
+			++failures;
+			EUDAQ_WARN("FERS HV monitor update failed on board "
+				+ std::to_string(board)
+				+ ", ret = " + std::to_string(ret));
+			continue;
+		}
+
+		shmp->hv_Vmon[fers_group][board] = hv_vmon;
+		shmp->hv_Imon[fers_group][board] = hv_imon;
+		shmp->tempDet[fers_group][board] = temp_detector;
+		shmp->tempFPGA[fers_group][board] = temp_fpga;
+		shmp->tempBoard[fers_group][board] = temp_board;
+		shmp->hv_status_on[fers_group][board] = hv_on ? 1 : 0;
+		shmp->FERS_LastSrvEvent_us[fers_group][board] =
+			std::chrono::high_resolution_clock::now();
+	}
+
+	PublishHvMonitorStatus(true);
+	SetStatusTag("FERS_HV_MONITOR_UPDATE",
+		reason + ": " + std::to_string(shmp->connectedboards[fers_group] - failures)
+		+ "/" + std::to_string(shmp->connectedboards[fers_group]) + " board(s)");
+	return failures == 0;
+}
+
+bool FERSProducer::SetHvOnOff(int board, bool on, const std::string &reason) {
+	if (IsStatus(eudaq::Status::STATE_RUNNING)) {
+		SetStatusTag("FERS_HV_SWITCH", "ignored: running");
+		EUDAQ_WARN("FERS HV switch ignored while running");
+		return false;
+	}
+	if (!IsValidSharedMemory(shmp) || shmp->connectedboards[fers_group] <= 0) {
+		SetStatusTag("FERS_HV_SWITCH", "ignored: no boards");
+		EUDAQ_WARN("FERS HV switch ignored: no connected boards");
+		return false;
+	}
+	if (board < 0 || board >= shmp->connectedboards[fers_group]) {
+		SetStatusTag("FERS_HV_SWITCH", "ignored: invalid board");
+		EUDAQ_WARN("FERS HV switch ignored: invalid board "
+			+ std::to_string(board)
+			+ " for " + std::to_string(shmp->connectedboards[fers_group])
+			+ " connected board(s)");
+		return false;
+	}
+
+	const int board_handle = shmp->handle[fers_group][board];
+	if (board_handle < 0) {
+		SetStatusTag("FERS_HV_SWITCH", "failed: closed board handle");
+		EUDAQ_WARN("FERS HV switch failed on board "
+			+ std::to_string(board) + ": closed board handle");
+		return false;
+	}
+
+	const int ret = FERS_HV_Set_OnOff(board_handle, on ? 1 : 0);
+	if (ret != 0) {
+		SetStatusTag("FERS_HV_SWITCH", "failed: board "
+			+ std::to_string(board) + " " + (on ? "ON" : "OFF"));
+		EUDAQ_WARN("FERS_HV_Set_OnOff(" + std::string(on ? "1" : "0")
+			+ ") failed on board " + std::to_string(board)
+			+ ", ret = " + std::to_string(ret)
+			+ ", FERSlib detail: " + FersLastErrorString());
+		return false;
+	}
+
+	shmp->hv_status_on[fers_group][board] = on ? 1 : 0;
+	const std::string prefix = "FERS_BRD" + std::to_string(board) + "_";
+	SetStatusTag(prefix + "HV_STATUS", on ? "ON" : "OFF");
+	SetStatusTag("FERS_HV_SWITCH", reason + ": board "
+		+ std::to_string(board) + " " + (on ? "ON" : "OFF"));
+	PublishHvMonitorStatus(true);
+	RefreshHvMonitorFromHardware(reason + " hv switch");
+	return true;
+}
+
+void FERSProducer::OnUnrecognised(const std::string &cmd,
+		const std::string &param) {
+	if (cmd == "FERS_UPDATE_HV_MONITOR") {
+		RefreshHvMonitorFromHardware("manual");
+		return;
+	}
+	if (cmd == "FERS_SET_HV_ONOFF") {
+		int board = 0;
+		std::string onoff_token;
+		std::istringstream full_param(param);
+		if (!(full_param >> board >> onoff_token)) {
+			board = 0;
+			std::istringstream state_only(param);
+			if (!(state_only >> onoff_token)) {
+				SetStatusTag("FERS_HV_SWITCH", "ignored: missing parameter");
+				EUDAQ_WARN("FERS HV switch ignored: missing ON/OFF parameter");
+				return;
+			}
+		}
+		bool on = false;
+		if (!ParseOnOffToken(onoff_token, &on)) {
+			SetStatusTag("FERS_HV_SWITCH", "ignored: invalid parameter");
+			EUDAQ_WARN("FERS HV switch ignored: invalid ON/OFF parameter '"
+				+ onoff_token + "'");
+			return;
+		}
+		SetHvOnOff(board, on, "manual");
+		return;
+	}
+	eudaq::Producer::OnUnrecognised(cmd, param);
+}
+
 //----------DOC-MARK-----BEG*INI-----DOC-MARK----------
 void FERSProducer::DoInitialise(){
+	try {
+	m_fers_readback_summary.clear();
 	// see https://www.tutorialspoint.com/inter_process_communication/inter_process_communication_shared_memory.htm
 	shmid = shmget(SHM_KEY, sizeof(struct shmseg), 0644|IPC_CREAT);
 	//shmid = shmget(SHM_KEY, sizeof(struct shmseg), 0);
 	if (shmid == -1) {
 		perror("Shared memory");
+		EUDAQ_THROW("FERS shared memory creation failed");
 	}
 	EUDAQ_WARN("producer constructor: shmid = "+std::to_string(shmid));
 
@@ -194,6 +673,8 @@ void FERSProducer::DoInitialise(){
 	shmp = (shmseg*)shmat(shmid, NULL, 0);
 	if (shmp == (void *) -1) {
 		perror("Shared memory attach");
+		shmp = nullptr;
+		EUDAQ_THROW("FERS shared memory attach failed");
 	}
 
 	initshm( shmid );
@@ -210,13 +691,18 @@ void FERSProducer::DoInitialise(){
 	fers_group = number_str.empty() ? 0 : std::stoi(number_str);
 	shmp->connectedboards[fers_group]=0;
 
-        EUDAQ_WARN("FERS "+fers_prodid+", GROUP = "+std::to_string(fers_group));
+	EUDAQ_WARN("FERS "+fers_prodid+", GROUP = "+std::to_string(fers_group));
 	std::string lock_path = ini->Get("FERS_DEV_LOCK_PATH", "ferslockfile.txt");
 	m_file_lock = fopen(lock_path.c_str(), "a");
+	if (!m_file_lock) {
+		EUDAQ_THROW("unable to open the lockfile: " + lock_path);
+	}
 #ifndef _WIN32
-	if(flock(fileno(m_file_lock), LOCK_EX|LOCK_NB)){ //fail
+	EUDAQ_INFO("FERS " + fers_prodid + " waiting for device lock: " + lock_path);
+	if(flock(fileno(m_file_lock), LOCK_EX)){ // serialize FERSlib USB access across producers
 		EUDAQ_THROW("unable to lock the lockfile: "+lock_path );
 	}
+	EUDAQ_INFO("FERS " + fers_prodid + " acquired device lock: " + lock_path);
 #endif
 
 	fers_ip_address = ini->Get("FERS_IP_ADDRESS", "");
@@ -245,6 +731,9 @@ void FERSProducer::DoInitialise(){
                                        +" connected to handle "+std::to_string(handle)
                                        );
                                     FERS_InitReadout(handle,ROmode,&allocsize);
+                                    PublishBoardReadback(std::string(tmp_path),
+                                                        shmp->connectedboards[fers_group],
+                                                        handle);
 
                                     // fill shared struct
                                     //vhandle[shmp->connectedboards[fers_group]]=handle;
@@ -262,6 +751,7 @@ void FERSProducer::DoInitialise(){
                               }else{
                                     EUDAQ_THROW("Bords at "+std::string(tmp_path)
                                                 +" error "+std::to_string(ret)
+                                                +", FERSlib detail: "+FersLastErrorString()
                                                 );
                               }
 
@@ -271,14 +761,26 @@ void FERSProducer::DoInitialise(){
 	if (fers_eth_address.empty() &&
 	    (fers_ip_address.rfind("usb:", 0) == 0 || fers_ip_address.rfind("eth:", 0) == 0)) {
 		int ROmode = ini->Get("FERS_RO_MODE", 0);
+		int expected_pid = ini->Get("FERS_EXPECTED_PID", -1);
 		int allocsize;
 		char tmp_path[100];
 		std::sprintf(tmp_path, "%s", fers_ip_address.c_str());
 		int ret = FERS_OpenDevice(tmp_path, &handle);
 		if (ret == 0) {
+			uint32_t opened_pid = FERS_pid(handle);
+			if (expected_pid >= 0 && opened_pid != static_cast<uint32_t>(expected_pid)) {
+				FERS_CloseDevice(handle);
+				EUDAQ_THROW("FERS at " + std::string(tmp_path)
+					+ " opened PID " + std::to_string(opened_pid)
+					+ ", expected " + std::to_string(expected_pid));
+			}
 			EUDAQ_INFO("Bords at " + std::string(tmp_path)
-				+ " connected to handle " + std::to_string(handle));
+				+ " connected to handle " + std::to_string(handle)
+				+ " PID " + std::to_string(opened_pid));
 			FERS_InitReadout(handle, ROmode, &allocsize);
+			PublishBoardReadback(std::string(tmp_path),
+				shmp->connectedboards[fers_group],
+				handle);
 
 			shmp->handle[fers_group][shmp->connectedboards[fers_group]] = handle;
 			shmp->FERS_TDLink[fers_group][shmp->connectedboards[fers_group]] = 0;
@@ -292,7 +794,8 @@ void FERSProducer::DoInitialise(){
 			shmp->connectedboards[fers_group]++;
 		} else {
 			EUDAQ_THROW("Bords at " + std::string(tmp_path)
-				+ " error " + std::to_string(ret));
+				+ " error " + std::to_string(ret)
+				+ ", FERSlib detail: " + FersLastErrorString());
 		}
 	}
 
@@ -335,6 +838,9 @@ void FERSProducer::DoInitialise(){
 						+" connected to handle "+std::to_string(handle)
 				 		);
 						FERS_InitReadout(handle,ROmode,&allocsize);
+						PublishBoardReadback(std::string(tmp_path),
+							shmp->connectedboards[fers_group],
+							handle);
 
 						// fill shared struct
 						//vhandle[shmp->connectedboards[fers_group]]=handle;
@@ -350,6 +856,7 @@ void FERSProducer::DoInitialise(){
 					}else{
 		   				EUDAQ_THROW("Bords at "+std::string(tmp_path)
 						+" error "+std::to_string(ret)
+						+", FERSlib detail: "+FersLastErrorString()
 				 		);
 					}
 
@@ -361,6 +868,11 @@ void FERSProducer::DoInitialise(){
 
 
 	EUDAQ_WARN("FERS: # connected boards is "+std::to_string(shmp->connectedboards[fers_group]));
+	SetStatusTag("FERS_BOARD_COUNT", std::to_string(shmp->connectedboards[fers_group]));
+	} catch (...) {
+		CleanupFersResources("init_error", true);
+		throw;
+	}
 
 }
 
@@ -380,10 +892,11 @@ void FERSProducer::DoConfigure(){
 	read_boards = conf->Get("FERS_DIRECT_READ", 0);
 	no_trigg = conf->Get("FERS_NO_TRIGG", 1);
 	spill_detect = conf->Get("FERS_SPILL_DETECT", 0);
-		sw_trigger = conf->Get("FERS_SW_TRIGGER", 0);
-		m_debug_startup = conf->Get("FERS_DEBUG_STARTUP", 0);
-		m_debug_trigger_print = conf->Get("FERS_DEBUG_TRIGGER_PRINT", 0);
-		m_plane_id = conf->Get("EX0_PLANE_ID", 100);
+	sw_trigger = conf->Get("FERS_SW_TRIGGER", 0);
+	m_debug_startup = conf->Get("FERS_DEBUG_STARTUP", 0);
+	m_debug_trigger_print = conf->Get("FERS_DEBUG_TRIGGER_PRINT", 0);
+	m_disable_t1_on_stop = conf->Get("FERS_DISABLE_T1_ON_STOP", 0);
+	m_plane_id = conf->Get("EX0_PLANE_ID", 100);
 	m_ms_busy = std::chrono::milliseconds(conf->Get("EX0_DURATION_BUSY_MS", 1000));
 	m_us_evt_length = std::chrono::microseconds(60); // used in readou.
 
@@ -404,7 +917,7 @@ void FERSProducer::DoConfigure(){
 	ret = FERS_LoadConfigFile(const_cast<char*>(fers_conf_filename.c_str()));
 
     if (ret != 0)
-       EUDAQ_THROW("Cannot load FERS configuration from file " + fers_conf_filename);
+       EUDAQ_THROW(FersErrorString("Cannot load FERS configuration from file " + fers_conf_filename, ret));
 
 
 	//fers_hv_vbias = conf->Get("FERS_HV_Vbias", 28.);
@@ -451,7 +964,7 @@ void FERSProducer::DoConfigure(){
 		if (ret == 0) {
 			EUDAQ_INFO("FERS_configure done");
 		} else {
-			EUDAQ_THROW("FERS_configure failed !!!");
+			EUDAQ_THROW(FersErrorString("FERS_configure", ret));
 		}
 
 
@@ -495,10 +1008,38 @@ void FERSProducer::DoConfigure(){
 				EUDAQ_THROW("HV bias NOT set");
 			}
 
+			float hv_vmon = 0.0f;
+			float hv_imon = 0.0f;
+			float temp_detector = 0.0f;
+			float temp_fpga = 0.0f;
+			float temp_board = 0.0f;
+			int mon_ret = 0;
+			mon_ret |= FERS_HV_Get_Vmon(shmp->handle[fers_group][kbrd], &hv_vmon);
+			mon_ret |= FERS_HV_Get_Imon(shmp->handle[fers_group][kbrd], &hv_imon);
+			mon_ret |= FERS_HV_Get_DetectorTemp(shmp->handle[fers_group][kbrd],
+				&temp_detector);
+			mon_ret |= FERS_Get_FPGA_Temp(shmp->handle[fers_group][kbrd],
+				&temp_fpga);
+			mon_ret |= FERS_Get_Board_Temp(shmp->handle[fers_group][kbrd],
+				&temp_board);
+			if (mon_ret == 0) {
+				shmp->hv_Vmon[fers_group][kbrd] = hv_vmon;
+				shmp->hv_Imon[fers_group][kbrd] = hv_imon;
+				shmp->tempDet[fers_group][kbrd] = temp_detector;
+				shmp->tempFPGA[fers_group][kbrd] = temp_fpga;
+				shmp->tempBoard[fers_group][kbrd] = temp_board;
+				shmp->hv_status_on[fers_group][kbrd] = hv_vmon > 1.0f ? 1 : 0;
+			} else {
+				EUDAQ_WARN("FERS HV monitor readback failed on board "
+					+ std::to_string(kbrd)
+					+ ", ret = " + std::to_string(mon_ret));
+			}
+
 			// Preserve the low-level T1 LEMO routing loaded from the Janus/FERS config.
 			m_t1_out_mask[kbrd] = FERScfg[FERS_INDEX(shmp->handle[fers_group][kbrd])]->T1_outMask;
 			m_start_run_mode[kbrd] = FERScfg[FERS_INDEX(shmp->handle[fers_group][kbrd])]->StartRunMode;
 		} // end loop over boards
+	PublishHvMonitorStatus(true);
 	//stair_do = (bool)(conf->Get("stair_do",0));
 	//stair_shapingt = (uint16_t)(conf->Get("stair_shapingt",0));
 	///stair_start = (uint16_t)(conf->Get("stair_start",0));
@@ -515,7 +1056,7 @@ void FERSProducer::DoConfigure(){
 
 //----------DOC-MARK-----BEG*RUN-----DOC-MARK----------
 void FERSProducer::DoStartRun(){
-	m_exit_of_run = false;
+	m_exit_of_run.store(false, std::memory_order_release);
 	m_debug_start_run_tp = std::chrono::steady_clock::now();
 	if (m_debug_startup) {
 		SetStatusTag("FERS_DBG_LAST_DQ", "NA");
@@ -549,7 +1090,7 @@ void FERSProducer::DoStartRun(){
 	}
 	DebugStartupCheckpoint("start_after_acq");
 
-	for(brd =0; brd < shmp->connectedboards[fers_group]; brd++) { // loop over boards
+	for (int brd = 0; brd < shmp->connectedboards[fers_group]; brd++) { // loop over boards
 		m_conn_evque[brd].clear();
 	}
 	DebugStartupCheckpoint("start_after_queue_clear");
@@ -577,104 +1118,52 @@ void FERSProducer::DoStartRun(){
 
 //----------DOC-MARK-----BEG*STOP-----DOC-MARK----------
 void FERSProducer::DoStopRun(){
-	m_exit_of_run = true;
-	for( int brd = 0 ; brd<shmp->connectedboards[fers_group];brd++) {
-		FERS_WriteRegister(shmp->handle[fers_group][brd], a_t1_out_mask, 0);
-	}
-	EUDAQ_INFO("FERS: Trigger Veto is activated");
-	std::this_thread::sleep_for(std::chrono::seconds(1));
+	m_exit_of_run.store(true, std::memory_order_release);
+	EUDAQ_INFO("FERS: Stop requested; waiting for readout loop before stopping acquisition");
+	WaitForRunLoopBodyExit("stop", std::chrono::seconds(2));
 
-	int start_mode = shmp->connectedboards[fers_group] > 0 ? m_start_run_mode[0] : STARTRUN_ASYNC;
-	int ret = FERS_StopAcquisition(
-		shmp->handle[fers_group],
-		shmp->connectedboards[fers_group],
-		start_mode,
-		GetRunNumber());
-	if (ret != 0) {
-		EUDAQ_THROW("FERS_StopAcquisition failed with ret = " + std::to_string(ret));
+	if (IsValidSharedMemory(shmp)) {
+		int nboards = shmp->connectedboards[fers_group];
+		if (nboards < 0) {
+			nboards = 0;
+		}
+		if (nboards > FERSLIB_MAX_NBRD) {
+			nboards = FERSLIB_MAX_NBRD;
+		}
+		int start_mode = nboards > 0 ? m_start_run_mode[0] : STARTRUN_ASYNC;
+		int ret = FERS_StopAcquisition(
+			shmp->handle[fers_group],
+			nboards,
+			start_mode,
+			GetRunNumber());
+		if (ret != 0) {
+			EUDAQ_THROW("FERS_StopAcquisition failed with ret = " + std::to_string(ret));
+		}
+		if (m_disable_t1_on_stop && !sw_trigger) {
+			for (int brd = 0; brd < nboards; brd++) {
+				FERS_WriteRegister(shmp->handle[fers_group][brd], a_t1_out_mask, 0);
+			}
+			EUDAQ_INFO("FERS: T1 LEMO routing disabled after acquisition stop");
+		}
 	}
-        for(brd =0; brd < shmp->connectedboards[fers_group]; brd++) { // loop over boards
-		m_conn_evque[brd].clear();
-	}
-	//std::this_thread::sleep_for(std::chrono::seconds(1));
+	m_conn_evque.clear();
+	m_conn_ev.clear();
 }
 
 //----------DOC-MARK-----BEG*RST-----DOC-MARK----------
 void FERSProducer::DoReset(){
-	m_exit_of_run = true;
-	if(m_file_lock){
-#ifndef _WIN32
-		flock(fileno(m_file_lock), LOCK_UN);
-#endif
-		fclose(m_file_lock);
-		m_file_lock = 0;
-	}
-	m_ms_busy = std::chrono::milliseconds();
-
-	// Stop the board cleanly before disconnecting so the USB endpoint does not
-	// stay busy after a reset/abnormal exit.
-	if (shmp->connectedboards[fers_group] > 0) {
-		int start_mode = m_start_run_mode[0];
-		FERS_StopAcquisition(
-			shmp->handle[fers_group],
-			shmp->connectedboards[fers_group],
-			start_mode,
-			GetRunNumber());
-	}
-	for (brd = 0; brd < shmp->connectedboards[fers_group]; brd++) {
-		FERS_WriteRegister(shmp->handle[fers_group][brd], a_t1_out_mask, 0);
-		FERS_FlushData(shmp->handle[fers_group][brd]);
-	}
-	std::this_thread::sleep_for(std::chrono::seconds(1));
-
-	for (brd = 0; brd < shmp->connectedboards[fers_group]; brd++) {
-		FERS_CloseReadout(shmp->handle[fers_group][brd]);
-		FERS_HV_Set_OnOff(shmp->handle[fers_group][brd], 0);
-		FERS_CloseDevice(shmp->handle[fers_group][brd]);
-		shmp->handle[fers_group][brd] = -1;
-	}
-	shmp->connectedboards[fers_group] = 0;
-	m_exit_of_run = false;
+	CleanupFersResources("reset", true);
 }
 
 //----------DOC-MARK-----BEG*TER-----DOC-MARK----------
 void FERSProducer::DoTerminate(){
-	m_exit_of_run = true;
-	if(m_file_lock){
-		fclose(m_file_lock);
-		m_file_lock = 0;
-	}
-
-	if ( shmp != NULL )
-        {
-		if (shmp->connectedboards[fers_group] > 0) {
-			int start_mode = m_start_run_mode[0];
-			FERS_StopAcquisition(
-				shmp->handle[fers_group],
-				shmp->connectedboards[fers_group],
-				start_mode,
-				GetRunNumber());
-		}
-		for(brd =0; brd < shmp->connectedboards[fers_group]; brd++) { // loop over boards
-			FERS_WriteRegister(shmp->handle[fers_group][brd], a_t1_out_mask, 0);
-			FERS_FlushData(shmp->handle[fers_group][brd]);
-			FERS_CloseReadout(shmp->handle[fers_group][brd]);
-			FERS_HV_Set_OnOff( shmp->handle[fers_group][brd], 0); // set HV off
-			FERS_CloseDevice(shmp->handle[fers_group][brd]);
-			shmp->handle[fers_group][brd] = -1;
-		}
-		shmp->connectedboards[fers_group] = 0;
-	}
-
-	// free shared memory
-	if (shmdt(shmp) == -1) {
-		perror("shmdt");
-	}
+	CleanupFersResources("terminate", true);
 }
 
 
 //----------DOC-MARK-----BEG*LOOP-----DOC-MARK----------
 void FERSProducer::RunLoop(){
+	ScopedAtomicFlag run_loop_active(m_run_loop_active);
 	auto tp_start_run = std::chrono::steady_clock::now();
 
 
@@ -744,7 +1233,7 @@ void FERSProducer::RunLoop(){
 			debug_empty_reads++;
 			return;
 		}
-		if (data_words > 0 && data_qualifier == 17) {
+		if (data_words > 0 && IsFersSpectData(data_qualifier)) {
 			debug_accepted_reads++;
 			if (event_ptr != nullptr) {
 				SpectEvent_t* event_spect = static_cast<SpectEvent_t*>(event_ptr);
@@ -785,7 +1274,7 @@ void FERSProducer::RunLoop(){
 			+ " elapsed_ms=" + std::to_string(DebugElapsedMs(m_debug_start_run_tp))
 			+ " read_attempts=" + std::to_string(debug_read_attempts)
 			+ " nb_zero=" + std::to_string(debug_empty_reads)
-			+ " dq17=" + std::to_string(debug_accepted_reads)
+			+ " dq_spect=" + std::to_string(debug_accepted_reads)
 			+ " dq_other=" + std::to_string(debug_rejected_reads)
 			+ " last_status=" + std::to_string(debug_last_status)
 			+ " last_nb=" + std::to_string(debug_last_nb)
@@ -801,7 +1290,7 @@ void FERSProducer::RunLoop(){
 	// Skip proactive HV/temperature register polling before the first readout event.
 	// Janus relies on service data during the run and avoids this eager USB access.
 
-	while(!m_exit_of_run){
+	while(!m_exit_of_run.load(std::memory_order_acquire)){
 
 
 			auto tp_trigger = std::chrono::steady_clock::now();
@@ -838,25 +1327,31 @@ void FERSProducer::RunLoop(){
 				auto time_diff_sec = std::chrono::duration_cast<std::chrono::seconds>(time_diff);
 				if (time_diff_sec.count()>2){
 					for (int ibrd = 0; ibrd < shmp->connectedboards[fers_group]; ibrd++) {
-						int ret;
-						float tempFPGA,tempDetector,hv_Vmon,hv_Imon;
+						int ret = 0;
+						float tempFPGA,tempDetector,tempBoard,hv_Vmon,hv_Imon;
 			                	ret |= FERS_HV_Get_Vmon(shmp->handle[fers_group][ibrd], &hv_Vmon);
 				                ret |= FERS_HV_Get_Imon(shmp->handle[fers_group][ibrd], &hv_Imon);
         				        ret |= FERS_HV_Get_DetectorTemp(shmp->handle[fers_group][ibrd], &tempDetector);
 			        	        ret |= FERS_Get_FPGA_Temp(shmp->handle[fers_group][ibrd], &tempFPGA);
+						ret |= FERS_Get_Board_Temp(shmp->handle[fers_group][ibrd], &tempBoard);
 						shmp->tempFPGA[fers_group][ibrd]=tempFPGA;
 						shmp->tempDet[fers_group][ibrd]=tempDetector;
+						shmp->tempBoard[fers_group][ibrd]=tempBoard;
 						shmp->hv_Vmon[fers_group][ibrd]=hv_Vmon;
 						shmp->hv_Imon[fers_group][ibrd]=hv_Imon;
 
-						shmp->FERS_LastSrvEvent_us[fers_group][shmp->connectedboards[fers_group]]=std::chrono::high_resolution_clock::now();
+						shmp->FERS_LastSrvEvent_us[fers_group][ibrd]=std::chrono::high_resolution_clock::now();
 					}
+					PublishHvMonitorStatus(false);
 				}
 			}
 
 
 			if (read_boards) {
 			   for (int ibrd = 0; ibrd < shmp->connectedboards[fers_group]; ibrd++) {
+				if (m_exit_of_run.load(std::memory_order_acquire)) {
+					break;
+				}
 				//run_time =  std::chrono::duration_cast<std::chrono::microseconds>( std::chrono::high_resolution_clock::now() - runloop_time);
 				//std::cout<<"---3333--- time in ms before FERS_GetEvent " <<run_time.count()/1000.<<std::endl;
 
@@ -877,6 +1372,9 @@ void FERSProducer::RunLoop(){
 				long long debug_read_call_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 					std::chrono::steady_clock::now() - debug_read_tp).count();
 
+				if (m_exit_of_run.load(std::memory_order_acquire)) {
+					break;
+				}
 
 				if(status<0){
 			            EUDAQ_THROW("FERS: Readout failure,  ret = " + std::to_string(status)+" board = "+std::to_string(iibrd));
@@ -884,14 +1382,19 @@ void FERSProducer::RunLoop(){
 
 				debug_note_read(debug_read_api, iibrd, DataQualifier, nb, status, debug_read_call_ms, Event);
 
+				if(nb>0 && IsFersServiceData(DataQualifier) && Event) {
+					UpdateServiceReadback(iibrd, *static_cast<ServEvent_t*>(Event));
+					PublishHvMonitorStatus(false);
+					continue;
+				}
 
-				if(nb>0&&DataQualifier==17) { // Data event in Spec 
+				if(nb>0 && IsFersSpectData(DataQualifier)) { // Data event in spectroscopy mode
 					newData++; // data - events*boards
 					SpectEvent_t* EventSpect = (SpectEvent_t*)Event;
 					debug_log_first_accepted(iibrd, DataQualifier, *EventSpect);
 					m_conn_evque[iibrd].push_back(*EventSpect);
 					if(EventSpect->trigger_id > shmp->FERS_last_trigID[fers_group][iibrd]){
-	   		  			shmp->FERS_last_event_time_us=std::chrono::high_resolution_clock::now();
+						shmp->FERS_last_event_time_us=std::chrono::high_resolution_clock::now();
 						shmp->FERS_last_trigID[fers_group][iibrd] = EventSpect->trigger_id;
 					}
 				}
@@ -902,7 +1405,9 @@ void FERSProducer::RunLoop(){
 			   }
 			}else{
  			   DataQualifier=1000;
-		           while(newData < shmp->connectedboards[fers_group]&&DataQualifier>0) { // read all data from the boards
+		           while(newData < shmp->connectedboards[fers_group] &&
+				  DataQualifier > 0 &&
+				  !m_exit_of_run.load(std::memory_order_acquire)) { // read all data from the boards
 				auto debug_read_tp = std::chrono::steady_clock::now();
 				status = FERS_GetEvent(shmp->handle[fers_group], &bindex, &DataQualifier, &tstamp_us, &Event, &nb);
 				long long debug_read_call_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -912,20 +1417,28 @@ void FERSProducer::RunLoop(){
 				    
 				}
 				debug_note_read("FERS_GetEvent", bindex, DataQualifier, nb, status, debug_read_call_ms, Event);
-				if(nb>0&&DataQualifier==17) { // Data event in Spec 
+				if(nb>0 && IsFersServiceData(DataQualifier) && Event) {
+					UpdateServiceReadback(bindex, *static_cast<ServEvent_t*>(Event));
+					PublishHvMonitorStatus(false);
+					continue;
+				}
+				if(nb>0 && IsFersSpectData(DataQualifier)) { // Data event in spectroscopy mode
 					newData++; // data - events*boards
 					SpectEvent_t* EventSpect = (SpectEvent_t*)Event;
 					debug_log_first_accepted(bindex, DataQualifier, *EventSpect);
 					m_conn_evque[bindex].push_back(*EventSpect);
-
 				}
 			   } // end of - read all data from the boards
 			} // choose read method
 		debug_maybe_log_summary("runloop_wait_first_send");
+		if (m_exit_of_run.load(std::memory_order_acquire)) {
+			break;
+		}
 		if(no_trigg>0) checkEntries(m_conn_evque); // detect no data sent by FERS board(s)
 
 
-		if( newData >= shmp->connectedboards[fers_group]) {  // if evt*boards >= boards, i.e. at least one complete event candidate
+		if(!m_exit_of_run.load(std::memory_order_acquire) &&
+		   newData >= shmp->connectedboards[fers_group]) {  // if evt*boards >= boards, i.e. at least one complete event candidate
 
 			newData=0;
     			int Nevt = 1000;
@@ -1055,7 +1568,9 @@ void FERSProducer::RunLoop(){
 		} // End NewData
 
 
-		std::this_thread::sleep_until(tp_end_of_busy);
+		if (!m_exit_of_run.load(std::memory_order_acquire)) {
+			std::this_thread::sleep_until(tp_end_of_busy);
+		}
 
 	}// while !m_exit_of_run 
 }

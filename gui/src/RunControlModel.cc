@@ -6,6 +6,21 @@
 
 std::vector<QString> RunControlModel::m_str_header={"type", "name", "state", "connection", "message", "information"};
 
+namespace {
+bool hideFromConnectionInformation(const std::string &connection_type,
+                                   const std::string &tag) {
+  const bool data_collector_tag =
+      connection_type == "DataCollector" &&
+      (tag == "MonitorEventN" || tag == "SyncDropN" || tag == "_SERVER");
+  return data_collector_tag ||
+         tag == "FERS_BOARD_COUNT" ||
+         tag == "FERS_INFO" ||
+         tag.rfind("FERS_HV_", 0) == 0 ||
+         tag.rfind("FERS_BRD", 0) == 0 ||
+         tag.rfind("Fast", 0) == 0;
+}
+}
+
 RunControlModel::RunControlModel(QObject *parent)
   : QAbstractListModel(parent){
 }
@@ -73,6 +88,9 @@ QVariant RunControlModel::data(const QModelIndex &index, int role) const {
       if(sta){
 	auto tags = sta->GetTags();
 	for(auto &tag: tags){
+          if (hideFromConnectionInformation(con->GetType(), tag.first)) {
+            continue;
+          }
 	  info += ("<"+tag.first+"> ");
 	  info += (tag.second+"  ");
 	}
@@ -110,4 +128,5 @@ eudaq::ConnectionSPC RunControlModel::getConnection(const QModelIndex &index){
     auto &con = it->first;	
     return con;
     }
-};
+  return eudaq::ConnectionSPC();
+}
